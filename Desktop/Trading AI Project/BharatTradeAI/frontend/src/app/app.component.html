@@ -1,0 +1,662 @@
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="BharatTrade AI home" (click)="$event.preventDefault(); setSection('overview')">
+      <span class="brand-mark">BT</span>
+      <span class="brand-name">BharatTrade<span>AI</span></span>
+    </a>
+    <div class="workspace-label">WORKSPACE</div>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <button type="button" [class.active]="section() === 'overview'" (click)="setSection('overview')"><span class="nav-index">01</span> Overview</button>
+      <button type="button" [class.active]="section() === 'news'" (click)="setSection('news')"><span class="nav-index">02</span> News intelligence</button>
+      <button type="button" [class.active]="section() === 'stock'" (click)="setSection('stock')"><span class="nav-index">03</span> Stock</button>
+      <button type="button" [class.active]="section() === 'ai-picks'" (click)="setSection('ai-picks')"><span class="nav-index">04</span> AI Stock Picks</button>
+      <button type="button" [class.active]="section() === 'ipos'" (click)="setSection('ipos')"><span class="nav-index">05</span> IPO market</button>
+      <button type="button" [class.active]="section() === 'account'" (click)="setSection('account')"><span class="nav-index">06</span> Account data</button>
+      <button type="button" [class.active]="section() === 'system'" (click)="setSection('system')"><span class="nav-index">07</span> System health</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="connection-line"><span class="live-dot" [class.offline]="!health()"></span> API {{ health()?.status ?? 'checking' }}</div>
+      <div class="sidebar-caption">MARKET INTELLIGENCE<br>INDIA · NSE / BSE</div>
+    </div>
+  </aside>
+
+  <main class="main-area">
+    <header class="topbar">
+      <div class="breadcrumb"><span>OPERATIONS</span><span class="slash">/</span>{{ section() }}</div>
+      <div class="topbar-actions">
+        <span class="market-state" [class.stock-feed-connected]="stockQuotes()"><span class="amber-dot"></span>{{ stockQuotes() ? 'PUBLIC QUOTES · ' + (stockQuotes()?.refreshedAt | date:'HH:mm:ss') : 'PUBLIC QUOTES · NO KEY' }}</span>
+        <button class="icon-button" type="button" aria-label="Refresh API status" title="Refresh status" [disabled]="statusLoading()" (click)="refreshStatus()"><span [class.spinning]="statusLoading()">↻</span></button>
+      </div>
+    </header>
+
+    <div class="page-content">
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">BHARATTRADE AI <span>·</span> OPERATIONS CONSOLE</p>
+          <h1>{{ section() === 'overview' ? 'Market operations' : section() === 'news' ? 'News intelligence' : section() === 'stock' ? 'Stock market' : section() === 'ai-picks' ? 'AI Stock Picks' : section() === 'ipos' ? 'IPO market' : section() === 'account' ? 'Broker account' : 'System health' }}</h1>
+          <p class="heading-copy">{{ section() === 'overview' ? 'A clear view of service readiness and connected account data.' : section() === 'news' ? 'Recent business headlines with transparent, descriptive sentiment.' : section() === 'stock' ? 'NIFTY indices and NSE equity quote snapshots from Yahoo Finance.' : section() === 'ai-picks' ? 'Live market quotes and company news with model probabilities shown only after validation.' : section() === 'ipos' ? 'Track Indian IPO timelines, price bands, subscriptions, GMP, deals, and listing outcomes.' : section() === 'account' ? 'Read-only account data available from your configured broker.' : 'Live dependency checks from the running API.' }}</p>
+        </div>
+        @if (lastUpdated(); as updated) {
+          <div class="updated-at"><span>LAST CHECK</span><strong>{{ updated | date:'HH:mm:ss' }}</strong></div>
+        }
+      </section>
+
+      @if (statusError()) { <div class="notice notice-error" role="alert">{{ statusError() }}</div> }
+
+      @if (section() === 'overview') {
+        <section class="status-grid" aria-label="Service status">
+          <article class="status-card api-card">
+            <div class="card-topline"><span>01 / API SERVICE</span><span class="status-pill" [class.good]="health()?.status === 'ok'">{{ statusLoading() ? 'CHECKING' : health()?.status ?? 'OFFLINE' }}</span></div>
+            <div class="status-title">{{ health()?.service ?? 'BharatTrade AI' }}</div>
+            <div class="status-detail">Environment <strong>{{ health()?.environment ?? '—' }}</strong></div>
+            <div class="card-rule"></div><div class="card-foot"><span>FastAPI</span><span class="mono">/api/v1/health</span></div>
+          </article>
+          <article class="status-card readiness-card">
+            <div class="card-topline"><span>02 / READINESS</span><span class="status-pill" [class.good]="readiness()?.status === 'ready'" [class.warn]="readiness()?.status === 'degraded'">{{ statusLoading() ? 'CHECKING' : readiness()?.status ?? 'UNKNOWN' }}</span></div>
+            <div class="status-title">Dependency check</div><div class="status-detail">Database and cache availability</div>
+            <div class="card-rule"></div><div class="card-foot"><span>{{ readinessChecks.length }} checks reported</span><span class="mono">/api/v1/ready</span></div>
+          </article>
+          <article class="status-card market-card">
+            <div class="card-topline"><span>03 / MARKET DATA</span><span class="status-pill" [class.good]="stockQuotes()" [class.warn]="!stockQuotes()">{{ stockQuotes() ? 'CONNECTED' : 'ON DEMAND' }}</span></div>
+            <div class="status-title">Public market quotes</div><div class="status-detail">NIFTY 50, Bank Nifty and NSE equity snapshots.</div>
+            <div class="card-rule"></div><div class="card-foot"><button type="button" class="text-button" (click)="setSection('stock')">Open Stock → Live</button><span class="mono">/api/v1/stocks/live</span></div>
+          </article>
+        </section>
+
+        <section class="overview-lower">
+          <article class="panel dependency-panel">
+            <div class="panel-heading"><div><p class="eyebrow">SERVICE MAP</p><h2>Dependency status</h2></div><button type="button" class="text-button" (click)="setSection('system')">View details <span>↗</span></button></div>
+            @if (statusLoading()) {
+              <div class="empty-state">Checking connected services…</div>
+            } @else if (readinessChecks.length) {
+              <div class="dependency-list">
+                @for (check of readinessChecks; track check.name) {
+                  <div class="dependency-row"><span class="service-dot" [class.service-ok]="check.status === 'connected'" [class.service-warn]="check.status !== 'connected'"></span><span class="dependency-name">{{ check.name }}</span><span class="dependency-detail">{{ check.detail }}</span><span class="dependency-status" [class.good-text]="check.status === 'connected'">{{ check.status }}</span></div>
+                }
+              </div>
+            } @else { <div class="empty-state">No dependency data available.</div> }
+          </article>
+          <article class="panel capability-panel">
+            <p class="eyebrow">AVAILABLE NOW</p><h2>Account data</h2>
+            <p class="capability-copy">The backend can read profile, funds, holdings, positions, orders, and instruments from Upstox when an access token is configured.</p>
+            <button type="button" class="primary-button" (click)="setSection('account')">Open account data <span>→</span></button>
+            <div class="read-only-note"><span class="lock-mark">RO</span><span>Read-only API. No order placement endpoint exists.</span></div>
+          </article>
+        </section>
+
+        <section class="analysis-note"><div class="analysis-mark">!</div><div><strong>Analysis is not connected to the UI yet</strong><p>Technical, options, news, and ML agents exist in the backend, but no analysis HTTP endpoints are currently registered.</p></div><span class="note-tag">API GAP</span></section>
+      }
+
+      @if (section() === 'news') {
+        <section class="news-workspace">
+          <form class="news-search panel" (submit)="$event.preventDefault(); searchNews()">
+            <label for="news-query">Search headlines</label>
+            <div class="search-controls">
+              <input id="news-query" type="search" maxlength="100" [value]="newsQuery()" (input)="updateNewsQuery($any($event.target).value)" placeholder="Company, ticker, or business topic">
+              <button class="primary-button" type="submit" [disabled]="newsLoading()"><span>⌕</span> Search news</button>
+            </div>
+            <div class="search-meta"><span>India · English business coverage</span><span>Search powered by {{ newsResponse()?.source ?? 'configured free provider' }}</span><span>{{ newsResponse()?.source === 'NewsData.io' ? 'Free tier: 12-hour delay' : (newsResponse()?.source === 'GDELT' ? 'Past 7 days' : 'GDELT fallback available') }}</span></div>
+          </form>
+
+          <aside class="trade-connect panel">
+            <div class="trade-connect-copy"><p class="eyebrow">TRADING DATA</p><h2>Live quotes are available</h2><p>Open Stock → Live for public NIFTY and NSE price snapshots. Read-only holdings and positions still require an Upstox access token in the backend `.env`; the Zerodha keys present there are not wired into this application.</p></div>
+            <button type="button" class="secondary-button" (click)="setSection('stock')">Open live quotes <span>→</span></button>
+          </aside>
+
+          @if (newsError()) {
+            <div class="notice notice-error" role="alert">{{ newsError() }} <button type="button" class="retry-button" (click)="searchNews()">Retry</button></div>
+          }
+
+          @if (newsLoading()) {
+            <div class="panel news-loading">Searching recent business coverage…</div>
+          } @else if (newsResponse(); as news) {
+            @if (news.cache_status === 'stale') { <div class="notice notice-warning" role="status">{{ news.cache_warning }}</div> }
+            <section class="news-summary panel">
+              <div class="summary-lead"><div><p class="eyebrow">HEADLINE SENTIMENT · {{ news.count }} ARTICLES</p><h2>{{ news.headline_bias }} <span>coverage</span></h2></div><span class="summary-query">{{ news.query }}</span></div>
+              <div class="sentiment-counts">
+                <div class="sentiment-count positive-count"><span>Positive</span><strong>{{ news.sentiment_counts.positive }}</strong></div>
+                <div class="sentiment-count negative-count"><span>Negative</span><strong>{{ news.sentiment_counts.negative }}</strong></div>
+                <div class="sentiment-count neutral-count"><span>Neutral</span><strong>{{ news.sentiment_counts.neutral }}</strong></div>
+              </div>
+              <p class="sentiment-disclaimer">{{ news.notice }} Individual publisher headlines may be incomplete or conflicting.</p>
+            </section>
+
+            <section class="news-results">
+              <div class="results-heading"><div><p class="eyebrow">RECENT COVERAGE</p><h2>Business headlines</h2></div><a [href]="news.source_url" target="_blank" rel="noopener noreferrer">About {{ news.source }} ↗</a></div>
+              @if (news.articles.length) {
+                <div class="article-list">
+                  @for (article of news.articles; track article.id) {
+                    <article class="article-row">
+                      <div class="article-main">
+                        <div class="article-meta"><span>{{ article.source || 'News source' }}</span><span class="meta-divider">·</span><time>{{ article.published_at ? (article.published_at | date:'dd MMM, HH:mm') : 'Time unavailable' }}</time></div>
+                        <a class="article-title" [href]="article.url" target="_blank" rel="noopener noreferrer">{{ article.title }} <span>↗</span></a>
+                        <div class="article-tags">
+                          <span class="sentiment-tag" [class.positive-tag]="article.sentiment.label === 'POSITIVE'" [class.negative-tag]="article.sentiment.label === 'NEGATIVE'">{{ article.sentiment.label }} HEADLINE</span>
+                          @if (article.event !== 'GENERAL') { <span class="event-tag">{{ article.event.replaceAll('_', ' ') }}</span> }
+                          @for (listing of article.listings; track listing.symbol) { <span class="listing-tag">{{ listing.exchanges.join(' / ') }} · {{ listing.symbol }} · {{ listing.name }}{{ listing.match_type === 'headline' ? ' · TEXT MATCH' : '' }}</span> }
+                          @for (symbol of article.unmatched_symbols; track symbol) { <span class="listing-tag">TICKER {{ symbol }}</span> }
+                        </div>
+                      </div>
+                      @if (article.tone !== null) { <div class="tone-value"><span>GDELT TONE</span><strong [class.tone-positive]="article.tone > 0" [class.tone-negative]="article.tone < 0">{{ article.tone > 0 ? '+' : '' }}{{ article.tone | number:'1.1-1' }}</strong></div> }
+                    </article>
+                  }
+                </div>
+              } @else {
+                <div class="panel news-empty">No matching articles were returned for this search.</div>
+              }
+            </section>
+            <footer class="source-attribution">News metadata supplied by <a [href]="news.source_url" target="_blank" rel="noopener noreferrer">{{ news.source }}</a>. Headlines link to their original publishers. Sentiment is an automated description of coverage, not a buy/sell signal.</footer>
+          } @else if (!newsError()) {
+            <div class="panel news-empty">Enter a company, ticker, or topic to search recent coverage.</div>
+          }
+        </section>
+      }
+
+      @if (section() === 'stock') {
+        <section class="stock-workspace">
+          <div class="resource-tabs stock-tabs" role="tablist" aria-label="Stock data view">
+            <button type="button" role="tab" aria-selected="true" class="selected">Live</button>
+          </div>
+          <div class="stock-toolbar panel">
+            <div><p class="eyebrow">YAHOO FINANCE · PUBLIC INTRADAY SNAPSHOT</p><h2>Live market</h2><p>NIFTY 50, Bank Nifty and a starter watchlist of NSE large-cap stocks. No key or broker login required.</p></div>
+            <button type="button" class="secondary-button" [disabled]="stockLoading()" (click)="loadStockQuotes()"><span [class.spinning]="stockLoading()">↻</span> Refresh quotes</button>
+          </div>
+
+          @if (stockError()) {
+            <div class="notice notice-error" role="alert">{{ stockError() }}
+              @if (stockQuotes()) { <span> Showing the last successful snapshot from {{ stockQuotes()?.refreshedAt | date:'dd MMM, HH:mm:ss' }}.</span> }
+              @else { <span> The public quote service may be temporarily unavailable or rate-limiting requests.</span> }
+              <button type="button" class="retry-button" (click)="loadStockQuotes()">Retry</button>
+            </div>
+          }
+
+          @if (stockLoading() && !stockQuotes()) {
+            <div class="panel empty-state">Loading public intraday quote snapshots…</div>
+          } @else if (stockQuotes(); as market) {
+            @if (market.warnings.length) {
+              <div class="notice notice-warning" role="status">Some symbols could not be updated: {{ market.warnings.join(' · ') }}</div>
+            }
+            <section class="stock-index-grid" aria-label="Major Indian indices">
+              @for (quote of stockIndices; track quote.symbol) {
+                <article class="stock-index-card panel">
+                  <div class="stock-quote-heading"><div><p class="eyebrow">NSE INDEX</p><h2>{{ quote.name }}</h2></div><span class="stock-live-pill">SNAPSHOT</span></div>
+                  @if (quote.lastPrice === null) {
+                    <div class="stock-quote-missing">Quote unavailable</div>
+                  } @else {
+                    <strong class="stock-index-price">{{ quote.lastPrice | currency:'INR':'symbol':'1.2-2' }}</strong>
+                    <div class="stock-index-change" [class.stock-up]="quote.change !== null && quote.change >= 0" [class.stock-down]="quote.change !== null && quote.change < 0">
+                      {{ quote.change === null ? '—' : (quote.change > 0 ? '+' : '') + (quote.change | number:'1.2-2') }}
+                      <span>({{ quote.changePct === null ? '—' : (quote.changePct > 0 ? '+' : '') + (quote.changePct | number:'1.2-2') + '%' }})</span>
+                    </div>
+                    <div class="stock-index-range"><span>Open <strong>{{ quote.open === null ? '—' : (quote.open | currency:'INR':'symbol':'1.2-2') }}</strong></span><span>High <strong>{{ quote.high === null ? '—' : (quote.high | currency:'INR':'symbol':'1.2-2') }}</strong></span><span>Low <strong>{{ quote.low === null ? '—' : (quote.low | currency:'INR':'symbol':'1.2-2') }}</strong></span></div>
+                  }
+                  <div class="stock-quote-time">As of {{ quote.timestamp ? (quote.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'time unavailable' }} IST</div>
+                </article>
+              }
+            </section>
+
+            <section class="stock-list-panel panel">
+              <div class="stock-list-heading"><div><p class="eyebrow">NSE EQUITIES · {{ stockRows.length }} SYMBOLS</p><h2>Large-cap watchlist</h2></div><span class="stock-refresh-note">Auto-refresh · 60 sec</span></div>
+              <div class="table-scroll stock-table-scroll"><table class="stock-table"><thead><tr><th>Company</th><th>Last price</th><th>Change</th><th>Open</th><th>Day high</th><th>Day low</th><th>Prev. close</th><th>Volume</th><th>Quote time</th></tr></thead><tbody>
+                @for (quote of stockRows; track quote.symbol) {
+                  <tr>
+                    <td><strong>{{ quote.symbol }}</strong><small>{{ quote.name }} · {{ quote.exchange }}</small></td>
+                    <td class="stock-price-cell">{{ quote.lastPrice === null ? '—' : (quote.lastPrice | currency:'INR':'symbol':'1.2-2') }}</td>
+                    <td [class.stock-up]="quote.change !== null && quote.change >= 0" [class.stock-down]="quote.change !== null && quote.change < 0">
+                      {{ quote.change === null ? '—' : (quote.change > 0 ? '+' : '') + (quote.change | number:'1.2-2') }}
+                      <small>{{ quote.changePct === null ? '—' : (quote.changePct > 0 ? '+' : '') + (quote.changePct | number:'1.2-2') + '%' }}</small>
+                    </td>
+                    <td>{{ quote.open === null ? '—' : (quote.open | currency:'INR':'symbol':'1.2-2') }}</td>
+                    <td>{{ quote.high === null ? '—' : (quote.high | currency:'INR':'symbol':'1.2-2') }}</td>
+                    <td>{{ quote.low === null ? '—' : (quote.low | currency:'INR':'symbol':'1.2-2') }}</td>
+                    <td>{{ quote.previousClose === null ? '—' : (quote.previousClose | currency:'INR':'symbol':'1.2-2') }}</td>
+                    <td>{{ quote.volume === null ? '—' : (quote.volume | number) }}</td>
+                    <td>{{ quote.timestamp ? (quote.timestamp | date:'HH:mm:ss':'Asia/Kolkata') : '—' }}</td>
+                  </tr>
+                }
+              </tbody></table></div>
+            </section>
+            <footer class="stock-attribution">
+              Public quote snapshots provided by <a href="https://finance.yahoo.com/" target="_blank" rel="noopener noreferrer">Yahoo Finance ↗</a> using its public intraday chart endpoint. This is an unofficial integration that may change or be rate-limited.
+              It is not a streaming or guaranteed real-time exchange feed; quotes may be delayed or stale. This page refreshes at most once per minute while open; use each quote timestamp to assess freshness.
+              <strong>Market data is informational only and is not investment advice.</strong>
+            </footer>
+          }
+        </section>
+      }
+
+      @if (section() === 'ai-picks') {
+        <section class="ai-picks-workspace">
+          <div class="ai-picks-warning" role="note">
+            <span class="ai-picks-warning-icon" aria-hidden="true">i</span>
+            <div><strong>Live market data · validated prediction only</strong><p>Stock quotes refresh from Yahoo Finance every 60 seconds; company news and FinBERT sentiment are fetched from the configured news provider on request. Direction probabilities appear only for a trained, calibrated model with fresh history and out-of-sample evaluation. Without one, this dashboard shows the live quote and model status, never a placeholder probability. Data may be delayed; not investment advice.</p></div>
+          </div>
+
+          <section class="ai-opportunities panel" aria-label="Validated high-confidence opportunities">
+            <div class="ai-history-heading">
+              <div><p class="eyebrow">STRICTLY ABOVE 80% · VALIDATED MODELS</p><h2>Next-session opportunities</h2><p class="ai-model-status">{{ aiStockOpportunities()?.notice ?? 'Checking live quotes, model validation, history and FinBERT sentiment.' }}</p></div>
+              <button type="button" class="secondary-button" [disabled]="aiOpportunitiesLoading()" (click)="loadAiStockOpportunities()"><span [class.spinning]="aiOpportunitiesLoading()">↻</span> {{ aiOpportunitiesLoading() ? 'Screening watchlist' : 'Refresh opportunities' }}</button>
+            </div>
+            @if (aiOpportunitiesError()) { <div class="notice notice-error" role="alert">{{ aiOpportunitiesError() }}</div> }
+            @if (aiOpportunitiesLoading() && !aiStockOpportunities()) { <div class="empty-state">Checking only fresh quotes and validated predictions…</div> }
+            @if (aiStockOpportunities(); as screening) {
+              @if (screening.opportunities.length) {
+                <div class="ai-opportunity-list">
+                  @for (opportunity of screening.opportunities; track opportunity.symbol) {
+                    <article class="ai-opportunity-card">
+                      <div class="ai-opportunity-heading">
+                        <div><strong>{{ opportunity.company_name }}</strong><span>{{ opportunity.exchange }}:{{ opportunity.symbol }} · target session {{ opportunity.next_trading_day | date:'dd MMM y':'Asia/Kolkata' }}*</span></div>
+                        <div class="ai-opportunity-probability">{{ opportunity.upward_probability * 100 | number:'1.1-1' }}%<small>calibrated upward</small></div>
+                      </div>
+                      <div class="ai-opportunity-facts">
+                        <span>{{ opportunity.quote_source }} live price <strong>{{ opportunity.current_price | currency:'INR':'symbol':'1.2-2' }}</strong></span>
+                        <span>Quote time <strong>{{ opportunity.quote_timestamp | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata' }} IST</strong></span>
+                        <span>Daily change <strong [class.stock-up]="opportunity.daily_change_pct >= 0" [class.stock-down]="opportunity.daily_change_pct < 0">{{ opportunity.daily_change_pct > 0 ? '+' : '' }}{{ opportunity.daily_change_pct | number:'1.2-2' }}%</strong></span>
+                        <span>Direction <strong>{{ opportunity.predicted_direction }}</strong></span>
+                        <span>Risk <strong>{{ opportunity.risk_classification.level }} · {{ opportunity.risk_classification.summary }}</strong></span>
+                        <span>FinBERT news <strong>{{ opportunity.news_sentiment.label }} · {{ opportunity.news_sentiment.analyzed_article_count }}/{{ opportunity.news_sentiment.article_count }} analyzed</strong></span>
+                        <span>Expected price range <strong>{{ opportunity.expected_price_range ? (opportunity.expected_price_range.low | currency:'INR':'symbol':'1.2-2') + ' – ' + (opportunity.expected_price_range.high | currency:'INR':'symbol':'1.2-2') : 'Not supported by the direction-only model' }}</strong></span>
+                      </div>
+                      <div class="ai-opportunity-technical">
+                        <strong>Technical & historical context</strong>
+                        <span>RSI(14) {{ opportunity.technical_analysis.indicators['rsi_14'] | number:'1.1-1' }}</span>
+                        <span>Volume ratio {{ opportunity.technical_analysis.indicators['volume_ratio'] | number:'1.2-2' }}× 20-day average</span>
+                        <span>MACD {{ opportunity.technical_analysis.summary['macd'] }}</span>
+                        <span>Trend {{ opportunity.technical_analysis.summary['trend'] }}</span>
+                        <span>5-session momentum {{ opportunity.technical_analysis.historical_pattern['momentum_5d_pct'] | number:'1.2-2' }}%</span>
+                        <span>ATR(14) {{ opportunity.technical_analysis.indicators['atr_14_pct'] | number:'1.2-2' }}%</span>
+                        <span>{{ opportunity.technical_analysis.history_candle_count }} daily bars · through {{ opportunity.technical_analysis.last_market_time | date:'dd MMM y':'Asia/Kolkata' }}</span>
+                      </div>
+                      <div class="ai-opportunity-explanation">
+                        <strong>Gemma 3 · {{ opportunity.gemma_explanation.status }}</strong>
+                        <p>{{ opportunity.gemma_explanation.summary }}</p>
+                        @if (opportunity.gemma_explanation.analysis) { <p>{{ opportunity.gemma_explanation.analysis }}</p> }
+                        @if (opportunity.gemma_explanation.status === 'unavailable') { <p>Validated model results remain available; the explanation service did not respond.</p> }
+                        <small>Model {{ opportunity.model_version }} · prediction {{ opportunity.prediction_timestamp | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata' }} IST · {{ opportunity.calendar_note }}</small>
+                      </div>
+                    </article>
+                  }
+                </div>
+              } @else if (!aiOpportunitiesLoading()) {
+                <div class="ai-opportunities-empty" role="status">{{ screening.empty_message }}</div>
+              }
+            }
+          </section>
+
+          <div class="ai-news-toolbar panel">
+            <div><p class="eyebrow">NEWS INTELLIGENCE · FINBERT SENTIMENT</p><strong>Configured provider · company sentiment is not a return prediction</strong><p>Model: {{ aiPickSentiment()?.model ?? 'ProsusAI/finbert' }} · cutoff: {{ aiPickSentiment()?.cutoff ? (aiPickSentiment()?.cutoff | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'not loaded' }} · analyzed: {{ aiPickSentiment()?.analyzedArticleCount ?? 0 }} / {{ aiPickSentiment()?.articleCount ?? 0 }} articles</p></div>
+            <div class="ai-news-actions">
+              <button type="button" class="secondary-button" [disabled]="aiPickNewsSyncing()" (click)="syncAiPickNews()"><span [class.spinning]="aiPickNewsSyncing()">↻</span> {{ aiPickNewsSyncing() ? 'Refreshing news' : 'Refresh news + analyze' }}</button>
+              <button type="button" class="secondary-button" [disabled]="aiPickSentimentAnalyzing() || aiPickSentimentLoading()" (click)="analyzeAiPickSentiment()"><span [class.spinning]="aiPickSentimentAnalyzing()">↻</span> {{ aiPickSentimentAnalyzing() ? 'Analyzing headlines' : 'Analyze stored news' }}</button>
+            </div>
+          </div>
+          @if (aiPickSentimentLoading() && !aiPickSentiment()) { <div class="panel empty-state">Loading stored FinBERT sentiment…</div> }
+          @if (aiPickNewsNotice()) { <div class="notice notice-warning" role="status">{{ aiPickNewsNotice() }}</div> }
+          @if (aiPickNewsError()) { <div class="notice notice-error" role="alert">{{ aiPickNewsError() }}</div> }
+          @if (aiPickSentimentError()) { <div class="notice notice-error" role="alert">{{ aiPickSentimentError() }}</div> }
+          @if (aiPickSentiment()?.status === 'pending') { <div class="notice notice-warning" role="status">Some recent articles have not been analyzed with FinBERT yet. Run analysis to update the stock-level scores.</div> }
+
+          <div class="ai-history-toolbar panel">
+            <div><p class="eyebrow">MARKET DATA · YAHOO FINANCE</p><strong>Live quotes and stored daily OHLCV history</strong><p>Quote refresh: {{ stockQuotes()?.refreshedAt ? (stockQuotes()?.refreshedAt | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'waiting for provider' }} · daily history refresh is scheduled for weekdays at 16:15 IST.</p></div>
+            <div class="ai-news-actions">
+              <button type="button" class="secondary-button" [disabled]="stockLoading() || aiPredictionLoading()" (click)="refreshAiStockAnalysis()">↻ Refresh live analysis</button>
+              <button type="button" class="secondary-button" [disabled]="aiHistorySyncing()" (click)="syncAiStockHistory()"><span [class.spinning]="aiHistorySyncing()">↻</span> {{ aiHistorySyncing() ? 'Syncing history' : 'Sync daily history' }}</button>
+            </div>
+          </div>
+          @if (stockError()) { <div class="notice notice-error" role="alert">{{ stockError() }}</div> }
+          @if (aiHistoryNotice()) { <div class="notice notice-warning" role="status">{{ aiHistoryNotice() }}</div> }
+          @if (aiHistoryError()) { <div class="notice notice-error" role="alert">{{ aiHistoryError() }}</div> }
+          @if (aiModelTrainingNotice()) { <div class="notice notice-warning" role="status">{{ aiModelTrainingNotice() }}</div> }
+          @if (aiPredictionError()) { <div class="notice notice-error" role="alert">{{ aiPredictionError() }}</div> }
+
+          <section class="ai-picks-toolbar panel" aria-label="AI Stock Picks filters">
+            <div class="ai-picks-toolbar-heading"><div><p class="eyebrow">LIVE WATCHLIST · {{ stockQuotes()?.provider ?? 'Yahoo Finance' }}</p><h2>Live stock analysis</h2><p class="ai-model-status">{{ aiPredictionList()?.notice ?? 'Waiting for live quotes and saved-model validation status.' }}</p></div><span class="ai-pick-count">{{ filteredAiStockPicks.length }} / {{ aiStockPicks.length }} live equities</span></div>
+            <div class="ai-news-actions">
+              <button type="button" class="primary-button" [disabled]="aiModelTraining() || aiPredictionLoading() || stockLoading()" (click)="trainAiStockModels()"><span [class.spinning]="aiModelTraining()">↻</span> {{ aiModelTraining() ? 'Training watchlist models' : 'Train missing watchlist models' }}</button>
+              @if (aiModelTraining()) { <span class="ai-model-status" role="status">Training and validating stocks one by one. This may take a few minutes.</span> }
+            </div>
+            <div class="ai-pick-filters">
+              <label>Exchange
+                <select [value]="aiPickExchange()" (change)="setAiPickExchange($any($event.target).value)">
+                  <option value="ALL">All exchanges</option><option value="NSE">NSE</option><option value="BSE">BSE</option>
+                </select>
+              </label>
+              <label>Sector
+                <select [value]="aiPickSector()" (change)="setAiPickSector($any($event.target).value)">
+                  <option value="ALL">All sectors</option>
+                  @for (sector of aiPickSectors; track sector) { <option [value]="sector">{{ sector }}</option> }
+                </select>
+              </label>
+              <label>Min. upward probability
+                <select [value]="aiPickMinProbability()" (change)="setAiPickMinProbability($any($event.target).value)">
+                  <option value="0">Any</option><option value="60">60%+</option><option value="70">70%+</option><option value="80">80%+</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          @if (filteredAiStockPicks.length) {
+            <section class="ai-pick-cards" aria-label="Live AI Stock Picks">
+              @for (pick of filteredAiStockPicks; track pick.id) {
+                @let quote = aiPickLiveQuote(pick);
+                @let prediction = aiPickPrediction(pick.symbol);
+                @let companyNews = aiPickCompanyNews(pick.symbol);
+                <button type="button" class="ai-pick-card panel" [class.ai-pick-selected]="selectedAiStockPick?.id === pick.id" [attr.aria-pressed]="selectedAiStockPick?.id === pick.id" (click)="selectAiStockPick(pick.id)">
+                  <span class="ai-pick-card-top"><span class="ai-pick-exchange">{{ pick.exchange }} · {{ stockQuotes()?.provider ?? 'MARKET FEED' }}</span><span class="ai-pick-sector">{{ pick.sector ?? 'Sector not configured' }}</span></span>
+                  <span class="ai-pick-company">{{ pick.companyName }}</span>
+                  <span class="ai-pick-symbol">{{ pick.exchange }}: {{ pick.symbol }}</span>
+                  <span class="ai-pick-prices"><strong>{{ quote?.lastPrice === null || quote?.lastPrice === undefined ? 'Quote unavailable' : (quote?.lastPrice | currency:'INR':'symbol':'1.2-2') }}</strong><span [class.stock-up]="(quote?.changePct ?? 0) >= 0" [class.stock-down]="(quote?.changePct ?? 0) < 0">{{ quote?.changePct === null || quote?.changePct === undefined ? '—' : (quote!.changePct! > 0 ? '+' : '') + (quote!.changePct! | number:'1.2-2') + '%' }}</span></span>
+                  <span class="ai-pick-live-time">Quote time · {{ quote?.timestamp ? (quote?.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'unavailable' }}</span>
+                  <span class="ai-pick-metrics">
+                    <span><small>Validated model</small><strong class="ai-pick-direction" [class.direction-up]="prediction?.direction === 'UP'" [class.direction-down]="prediction?.direction === 'DOWN'">{{ prediction?.status === 'ready' ? prediction?.direction : (prediction?.validation_status ?? 'loading') }}</strong></span>
+                    <span><small>Upward probability</small><strong>{{ prediction?.status === 'ready' && prediction?.upward_probability !== undefined ? (prediction!.upward_probability! * 100 | number:'1.1-1') + '%' : 'Not validated' }}</strong></span>
+                  </span>
+                  @if (prediction?.status === 'ready') { <span class="ai-pick-progress" aria-hidden="true"><span [style.width.%]="prediction!.upward_probability! * 100"></span></span> }
+                  <span class="ai-pick-tags"><span class="ai-pick-risk" [class.risk-low]="prediction?.status === 'ready'">{{ prediction?.status === 'ready' ? (prediction?.probability_threshold_met ? '80%+ calibrated screen' : 'Validated model') : (prediction?.status ?? 'status pending') }}</span><span class="ai-pick-sentiment" [class.sentiment-positive]="companyNews?.sentiment === 'POSITIVE'" [class.sentiment-negative]="companyNews?.sentiment === 'NEGATIVE'">{{ companyNews?.sentiment ?? 'NO NEWS DATA' }} · {{ companyNews?.articleCount ?? 0 }} ARTICLES</span></span>
+                  <span class="ai-pick-date">Model input date · {{ prediction?.last_market_time ? (prediction?.last_market_time | date:'dd MMM y':'Asia/Kolkata') : 'daily history unavailable' }}</span>
+                </button>
+              }
+            </section>
+
+            @if (selectedAiStockPick; as pick) {
+              @let selectedQuote = aiPickLiveQuote(pick);
+              @let selectedPrediction = aiPickPrediction(pick.symbol);
+              <section class="ai-pick-detail panel" aria-label="Live market and validated model analysis">
+                <div class="ai-pick-detail-heading"><div><p class="eyebrow">LIVE MARKET CONTEXT · MODEL STATUS</p><h2>{{ pick.companyName }}</h2><p>{{ pick.exchange }}: {{ pick.symbol }} · {{ pick.sector ?? 'Sector not configured' }}</p></div><span class="ai-pick-detail-badge">{{ selectedPrediction?.status === 'ready' ? 'OUT-OF-SAMPLE VALIDATED' : (selectedPrediction?.status ?? 'MODEL STATUS LOADING') }}</span></div>
+                <div class="ai-pick-detail-facts">
+                  <div><span>Current price · {{ stockQuotes()?.provider ?? 'provider' }}</span><strong>{{ selectedQuote?.lastPrice === null || selectedQuote?.lastPrice === undefined ? '—' : (selectedQuote?.lastPrice | currency:'INR':'symbol':'1.2-2') }}</strong></div>
+                  <div><span>Daily move</span><strong [class.stock-up]="(selectedQuote?.changePct ?? 0) >= 0" [class.stock-down]="(selectedQuote?.changePct ?? 0) < 0">{{ selectedQuote?.changePct === null || selectedQuote?.changePct === undefined ? '—' : (selectedQuote!.changePct! > 0 ? '+' : '') + (selectedQuote!.changePct! | number:'1.2-2') + '%' }}</strong></div>
+                  <div><span>Previous close</span><strong>{{ selectedQuote?.previousClose === null || selectedQuote?.previousClose === undefined ? '—' : (selectedQuote?.previousClose | currency:'INR':'symbol':'1.2-2') }}</strong></div>
+                  <div><span>Trading volume</span><strong>{{ selectedQuote?.volume === null || selectedQuote?.volume === undefined ? '—' : (selectedQuote?.volume | number) }}</strong></div>
+                  <div><span>Quote timestamp</span><strong>{{ selectedQuote?.timestamp ? (selectedQuote?.timestamp | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'Unavailable' }}</strong></div>
+                  <div><span>Model status</span><strong>{{ selectedPrediction?.validation_status ?? 'loading' }}</strong></div>
+                  <div><span>Upward probability</span><strong>{{ selectedPrediction?.status === 'ready' && selectedPrediction?.upward_probability !== undefined ? (selectedPrediction!.upward_probability! * 100 | number:'1.1-1') + '%' : 'Not validated' }}</strong></div>
+                  <div><span>FinBERT sentiment score</span><strong>{{ aiPickCompanyNews(pick.symbol)?.sentimentScore === null || aiPickCompanyNews(pick.symbol)?.sentimentScore === undefined ? '—' : (aiPickCompanyNews(pick.symbol)?.sentimentScore | number:'1.2-2') }}</strong></div>
+                </div>
+                <section class="ai-model-panel" aria-label="Validated next-session stock direction">
+                  <div class="ai-history-heading">
+                    <div><p class="eyebrow">NEXT REGULAR SESSION · XGBOOST + LSTM</p><h3>Stock direction model</h3></div>
+                    <button type="button" class="secondary-button" [disabled]="aiModelTraining() || aiPredictionLoading()" (click)="trainAiStockModel()">
+                      <span [class.spinning]="aiModelTraining()">↻</span>
+                      {{ aiModelTraining() ? 'Training and backtesting' : 'Train + evaluate model' }}
+                    </button>
+                  </div>
+                  @if (aiPredictionLoading()) { <div class="ai-model-status">Loading saved model and market-data status…</div> }
+                  @if (aiPickPrediction(pick.symbol); as prediction) {
+                    @if (prediction.status === 'ready') {
+                      <div class="ai-model-result">
+                        <div class="ai-model-probability">
+                          <span>{{ prediction.direction }} · calibrated upward probability</span>
+                          <strong>{{ prediction.upward_probability! * 100 | number:'1.1-1' }}%</strong>
+                          <small>{{ prediction.probability_threshold_met ? 'Above the 80% screening threshold' : 'Below the 80% screening threshold' }} · not an accuracy claim</small>
+                        </div>
+                        <div class="ai-model-detail">
+                          <span>Downward probability <strong>{{ prediction.downward_probability! * 100 | number:'1.1-1' }}%</strong></span>
+                          <span>Last close <strong>{{ prediction.last_close | currency:'INR':'symbol':'1.2-2' }}</strong></span>
+                          <span>Market data time <strong>{{ prediction.last_market_time ? (prediction.last_market_time | date:'dd MMM y, HH:mm':'Asia/Kolkata') + ' IST' : '—' }}</strong></span>
+                          <span>Model version <strong>{{ prediction.model_version }}</strong></span>
+                        </div>
+                      </div>
+                      @if (prediction.metrics?.selected; as metrics) {
+                        <div class="ai-model-metrics">
+                          <strong>Chronological holdout · {{ metrics.sample_count }} test observations</strong>
+                          <span>Precision {{ metrics.precision | number:'1.2-2' }}</span>
+                          <span>Recall {{ metrics.recall | number:'1.2-2' }}</span>
+                          <span>F1 {{ metrics.f1 | number:'1.2-2' }}</span>
+                          <span>Brier {{ metrics.brier_score | number:'1.3-3' }}</span>
+                        </div>
+                      }
+                      @if (prediction.metrics?.xgboost; as xgbMetrics) {
+                        <div class="ai-model-metrics">
+                          <strong>Out-of-sample model comparison · {{ xgbMetrics.sample_count }} observations</strong>
+                          <span>XGBoost F1 {{ xgbMetrics.f1 | number:'1.2-2' }} · Brier {{ xgbMetrics.brier_score | number:'1.3-3' }}</span>
+                          @if (prediction.metrics?.lstm; as lstmMetrics) { <span>LSTM F1 {{ lstmMetrics.f1 | number:'1.2-2' }} · Brier {{ lstmMetrics.brier_score | number:'1.3-3' }}</span> }
+                        </div>
+                      }
+                      @if (prediction.metrics?.walk_forward_xgboost; as walkForward) {
+                        <p class="ai-model-status">Expanding-window XGBoost backtest · {{ walkForward.sample_count }} observations · F1 {{ walkForward.f1 | number:'1.2-2' }} · Brier {{ walkForward.brier_score | number:'1.3-3' }}. Ensemble selected by a separate chronological validation window: {{ prediction.ensemble?.used ? 'yes' : 'no; best individual model retained' }}.</p>
+                      }
+                      <p class="ai-model-status">{{ prediction.probability_note }}</p>
+                      <p class="ai-model-status">Model daily-bar input through {{ prediction.last_market_time ? (prediction.last_market_time | date:'dd MMM y, HH:mm':'Asia/Kolkata') + ' IST' : 'unknown time' }}; current quote time {{ selectedQuote?.timestamp ? (selectedQuote?.timestamp | date:'dd MMM y, HH:mm':'Asia/Kolkata') + ' IST' : 'unavailable' }}. The intraday quote is displayed as context, not inserted into the daily-bar model. FinBERT news context: {{ prediction.news_context ?? 'unavailable' }}; market context: {{ prediction.market_context ?? 'unavailable' }}; sector context: {{ prediction.sector_context ?? 'unavailable' }}.
+                      </p>
+                    } @else {
+                      <div class="ai-model-status" role="status">
+                        {{ prediction.message ?? ('Model status: ' + prediction.validation_status.replaceAll('_', ' ')) }}
+                        @if (prediction.sample_count !== undefined) { <span> · {{ prediction.sample_count }} labeled observations; {{ prediction.required_sample_count ?? 200 }} required</span> }
+                      </div>
+                    }
+                  } @else if (!aiPredictionLoading()) {
+                    <div class="ai-model-status">No model status loaded yet. The first training run needs sufficient five-year daily history.</div>
+                  }
+                </section>
+                <section class="ai-company-news" aria-label="Company-specific news and sentiment">
+                  @if (aiPickCompanyNews(pick.symbol); as companyNews) {
+                    <div class="ai-history-heading"><div><p class="eyebrow">NEWS INTELLIGENCE · {{ pick.symbol }}</p><h3>Company news & FinBERT sentiment</h3></div><span class="ai-history-freshness">{{ companyNews.analyzedArticleCount }} / {{ companyNews.articleCount }} analyzed</span></div>
+                    @if (companyNews.articles.length) {
+                      <div class="ai-news-summary">
+                        <span class="ai-news-score">Overall score <strong>{{ companyNews.sentimentScore === null ? '—' : (companyNews.sentimentScore | number:'1.2-2') }}</strong></span>
+                        @if (companyNews.probabilities; as companyProbabilities) {
+                          <span class="ai-news-event">Positive {{ companyProbabilities.positive * 100 | number:'1.0-1' }}%</span>
+                          <span class="ai-news-event">Negative {{ companyProbabilities.negative * 100 | number:'1.0-1' }}%</span>
+                          <span class="ai-news-event">Neutral {{ companyProbabilities.neutral * 100 | number:'1.0-1' }}%</span>
+                        }
+                        @for (event of (companyNews.eventCounts | keyvalue); track event.key) { <span class="ai-news-event">{{ event.key.replaceAll('_', ' ') }} · {{ event.value }}</span> }
+                      </div>
+                      <div class="ai-news-article-list">
+                        @for (article of companyNews.articles; track article.id) {
+                          <article class="ai-news-article">
+                            <div class="ai-news-article-heading"><span class="ai-pick-sentiment" [class.sentiment-positive]="article.sentiment === 'POSITIVE'" [class.sentiment-negative]="article.sentiment === 'NEGATIVE'">{{ article.sentiment ?? 'NOT ANALYZED' }} · score {{ article.sentimentScore === null ? '—' : (article.sentimentScore | number:'1.2-2') }}</span><span class="ai-news-event">{{ article.event.replaceAll('_', ' ') }}</span></div>
+                            @if (article.url) { <a [href]="article.url" target="_blank" rel="noopener noreferrer">{{ article.title }} ↗</a> } @else { <strong>{{ article.title }}</strong> }
+                            @if (article.description) { <p>{{ article.description }}</p> }
+                            @if (article.probabilities; as probabilities) { <div class="ai-news-probabilities"><span>Positive {{ probabilities.positive * 100 | number:'1.0-1' }}%</span><span>Negative {{ probabilities.negative * 100 | number:'1.0-1' }}%</span><span>Neutral {{ probabilities.neutral * 100 | number:'1.0-1' }}%</span></div> }
+                            <div class="ai-news-meta"><span>{{ article.source }} · {{ article.provider }} · fetched {{ article.retrievedAt | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST · relevance {{ article.relevanceScore | number:'1.2-2' }} · freshness {{ article.freshnessWeight | number:'1.2-2' }}</span><time [attr.datetime]="article.publishedAt">{{ article.publishedAt | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST</time></div>
+                          </article>
+                        }
+                      </div>
+                    } @else {
+                      <div class="ai-history-empty">{{ aiPickSentimentLoading() ? 'Loading company-specific news…' : aiPickSentiment()?.status === 'no_data' ? 'No company news is stored before this cutoff. Refresh company news to query the configured provider.' : 'No news items are available for this company before the cutoff.' }}</div>
+                    }
+                  } @else {
+                    <div class="ai-history-empty">{{ aiPickSentimentLoading() ? 'Loading company-specific FinBERT results…' : 'Company sentiment data is not available.' }}</div>
+                  }
+                  <p class="ai-history-footnote">The stock-level FinBERT probabilities use the preceding {{ aiPickSentiment()?.lookbackDays ?? 7 }} days and are weighted by freshness ({{ aiPickSentiment()?.freshnessHalfLifeHours ?? 48 }}-hour half-life) and company relevance. Items without a publication timestamp and items at or after the cutoff are excluded. Headline sentiment is descriptive, not a forecast.</p>
+                </section>
+
+                <section class="ai-history-panel" aria-label="Stored daily OHLCV history">
+                  <div class="ai-history-heading"><div><p class="eyebrow">DAILY OHLCV · UP TO FIVE YEARS</p><h3>{{ pick.symbol }} price history</h3></div><span class="ai-history-freshness">Latest market bar · {{ aiStockHistory()?.symbol === pick.symbol && aiStockHistory()?.latestMarketTime ? (aiStockHistory()?.latestMarketTime | date:'dd MMM y':'Asia/Kolkata') : 'not available' }}</span></div>
+                  @if (aiHistoryLoading() && aiStockHistory()?.symbol !== pick.symbol) {
+                    <div class="ai-history-empty">Loading stored daily history…</div>
+                  } @else if (aiStockHistory()?.symbol === pick.symbol && aiStockHistory()?.candles?.length) {
+                    <div class="ai-history-meta"><span>Source: Yahoo Finance</span><span>Last sync: {{ aiStockHistory()?.lastSyncedAt ? (aiStockHistory()?.lastSyncedAt | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'unknown' }}</span><span>Bars: {{ aiStockHistory()?.count }}</span><span class="ai-history-freshness-pill" [class.fresh]="aiStockHistory()?.freshness === 'fresh'" [class.stale]="aiStockHistory()?.freshness === 'stale'">{{ aiStockHistory()?.freshness ?? 'unknown' }} data</span></div>
+                    @if (aiStockHistory()?.syncStatus === 'error') { <div class="ai-history-sync-warning" role="status">Last history sync failed: {{ aiStockHistory()?.syncError }} Existing stored candles are shown if available.</div> }
+                    <div class="table-scroll ai-history-table-scroll"><table class="ai-history-table"><thead><tr><th>Market date</th><th>Previous close</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody>
+                      @for (candle of aiPickHistoryRows; track candle.timestamp) {
+                        <tr><td>{{ candle.timestamp ? (candle.timestamp | date:'dd MMM y':'Asia/Kolkata') : '—' }}</td><td>{{ candle.previousClose === null ? '—' : (candle.previousClose | currency:'INR':'symbol':'1.2-2') }}</td><td>{{ candle.open | currency:'INR':'symbol':'1.2-2' }}</td><td>{{ candle.high | currency:'INR':'symbol':'1.2-2' }}</td><td>{{ candle.low | currency:'INR':'symbol':'1.2-2' }}</td><td>{{ candle.close | currency:'INR':'symbol':'1.2-2' }}</td><td>{{ candle.volume === null ? '—' : (candle.volume | number) }}</td></tr>
+                      }
+                    </tbody></table></div>
+                    <p class="ai-history-footnote">Showing up to 30 most recent stored daily bars. Market date is the provider's candle timestamp; quote and history data can be delayed or unavailable.</p>
+                  } @else {
+                    <div class="ai-history-empty">No stored daily bars yet. Select “Sync daily history” to request a five-year OHLCV snapshot. Automatic sync runs weekdays at 16:15 IST.</div>
+                  }
+                </section>
+              </section>
+            }
+          } @else {
+            <div class="ai-pick-empty panel" role="status"><span class="empty-symbol">—</span><h2>{{ stockLoading() ? 'Loading live market data' : aiPickMinProbability() ? 'No validated predictions match this probability filter' : 'No live equity quotes available' }}</h2><p>{{ aiPickMinProbability() ? 'The probability filter includes only trained, calibrated models with out-of-sample validation. Untrained stocks are not assigned a probability.' : 'The stock list is built from the current quote response; try refreshing live analysis when the provider is available.' }}</p><button type="button" class="secondary-button" (click)="refreshAiStockAnalysis()">Refresh live analysis</button><button type="button" class="secondary-button" (click)="resetAiPickFilters()">Reset filters</button></div>
+          }
+        </section>
+      }
+
+      @if (section() === 'ipos') {
+        <section class="ipo-workspace">
+          <div class="ipo-toolbar panel">
+            <div><p class="eyebrow">PUBLIC MARKET DATA · FREE · NO API KEY</p><h2>Indian IPO tracker</h2><p>Upcoming, open, closed and listed issues across Mainboard and SME.</p></div>
+            <button type="button" class="secondary-button" [disabled]="ipoLoading()" (click)="loadIpoDashboard()"><span [class.spinning]="ipoLoading()">↻</span> Refresh data</button>
+          </div>
+
+          @if (ipoError()) { <div class="notice notice-error" role="alert">{{ ipoError() }} <button type="button" class="retry-button" (click)="loadIpoDashboard()">Retry</button></div> }
+          @if (ipoLoading() && !ipoList()) { <div class="panel empty-state">Loading IPO listings, deals and scoreboard…</div> }
+
+          @if (ipoList(); as listingData) {
+            <section class="ipo-status-grid" aria-label="IPO status counts">
+              <article class="ipo-stat"><span>UPCOMING</span><strong>{{ ipoStatusCounts.UPCOMING }}</strong><small>Not yet open</small></article>
+              <article class="ipo-stat ipo-stat-open"><span>OPEN</span><strong>{{ ipoStatusCounts.OPEN }}</strong><small>Applications ongoing</small></article>
+              <article class="ipo-stat"><span>CLOSED</span><strong>{{ ipoStatusCounts.CLOSED }}</strong><small>Awaiting listing</small></article>
+              <article class="ipo-stat"><span>LISTED</span><strong>{{ ipoStatusCounts.LISTED }}</strong><small>Trading commenced</small></article>
+            </section>
+
+            <section class="ipo-directory panel">
+              <div class="ipo-section-heading">
+                <div><p class="eyebrow">ISSUE CALENDAR · {{ listingData.count }} TRACKED</p><h2>IPO directory</h2></div>
+                <div class="ipo-filters">
+                  <label>Search
+                    <input type="search" [value]="ipoSearchQuery()" (input)="updateIpoSearchQuery($any($event.target).value)" placeholder="Company, ticker, sector">
+                  </label>
+                  <label>Status
+                    <select [value]="ipoStatusFilter()" (change)="setIpoStatusFilter($any($event.target).value)">
+                      <option value="ALL">All statuses</option><option value="UPCOMING">Upcoming</option><option value="OPEN">Open</option><option value="CLOSED">Closed</option><option value="LISTED">Listed</option>
+                    </select>
+                  </label>
+                  <label>Board
+                    <select [value]="ipoBoardFilter()" (change)="setIpoBoardFilter($any($event.target).value)">
+                      <option value="ALL">All boards</option><option value="MAINBOARD">Mainboard</option><option value="SME">SME</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              @if (filteredIpos.length) {
+                <div class="ipo-list">
+                  @for (ipo of filteredIpos; track ipo.slug) {
+                    <button type="button" class="ipo-list-row" [class.ipo-list-selected]="selectedIpoSlug() === ipo.slug" (click)="selectIpo(ipo.slug)">
+                      <span class="ipo-name-cell"><strong>{{ ipo.name }}</strong><small>{{ ipo.symbol ?? ipo.exchange ?? 'India' }} · {{ ipo.board }}{{ ipo.sector ? ' · ' + ipo.sector : '' }}</small></span>
+                      <span class="ipo-status" [class]="'ipo-status status-' + ipo.status.toLowerCase()">{{ ipo.status }}</span>
+                      <span><small>PRICE BAND</small><strong>{{ ipo.priceMin !== null && ipo.priceMax !== null ? (ipo.priceMin | currency:'INR':'symbol':'1.0-2') + ' – ' + (ipo.priceMax | currency:'INR':'symbol':'1.0-2') : '—' }}</strong></span>
+                      <span><small>GMP · SUBSCRIPTION</small><strong>{{ ipo.lastGmp === null ? '—' : (ipo.lastGmp | currency:'INR':'symbol':'1.0-2') }} · {{ ipo.lastSubX === null ? '—' : (ipo.lastSubX | number:'1.0-2') + '×' }}</strong></span>
+                      <span><small>OPEN · CLOSE</small><strong>{{ formatMarketDate(ipo.openDate) }} · {{ formatMarketDate(ipo.closeDate) }}</strong></span>
+                    </button>
+                  }
+                </div>
+              } @else {
+                <div class="empty-state">No IPOs match these filters.</div>
+              }
+            </section>
+
+            <section class="ipo-detail-grid">
+              <article class="panel ipo-detail-panel">
+                @if (ipoDetailLoading()) {
+                  <div class="empty-state">Loading selected IPO details…</div>
+                } @else if (ipoDetailError()) {
+                  <div class="empty-state error-copy" role="alert">{{ ipoDetailError() }} <button type="button" class="retry-button" (click)="loadIpoDetail(selectedIpoSlug())">Retry</button></div>
+                } @else if (selectedIpo; as ipo) {
+                  <div class="ipo-section-heading"><div><p class="eyebrow">ISSUE PROFILE · {{ ipo.board }}</p><h2>{{ ipo.name }}</h2><p class="ipo-subtitle">{{ ipo.symbol ?? '—' }} · {{ ipo.exchange ?? 'Exchange not reported' }}{{ ipo.sector ? ' · ' + ipo.sector : '' }}</p></div><span class="ipo-status" [class]="'ipo-status status-' + ipo.status.toLowerCase()">{{ ipo.status }}</span></div>
+                  <div class="ipo-facts">
+                    <div><span>Price band</span><strong>{{ ipo.priceMin === null || ipo.priceMax === null ? '—' : (ipo.priceMin | currency:'INR':'symbol':'1.0-2') + ' – ' + (ipo.priceMax | currency:'INR':'symbol':'1.0-2') }}</strong></div>
+                    <div><span>Lot size</span><strong>{{ ipo.lotSize === null ? '—' : (ipo.lotSize | number) + ' shares' }}</strong></div>
+                    <div><span>Issue size</span><strong>{{ ipo.issueSizeCr === null ? '—' : (ipo.issueSizeCr | number:'1.0-2') + ' Cr' }}</strong></div>
+                    <div><span>Registrar</span><strong>{{ ipo.registrar ?? '—' }}</strong></div>
+                    <div><span>Opens</span><strong>{{ formatMarketDate(ipo.openDate) }}</strong></div>
+                    <div><span>Closes</span><strong>{{ formatMarketDate(ipo.closeDate) }}</strong></div>
+                    <div><span>Allotment</span><strong>{{ formatMarketDate(ipo.allotmentDate) }}</strong></div>
+                    <div><span>Listing date</span><strong>{{ formatMarketDate(ipo.listingDate) }}</strong></div>
+                    <div><span>Issue price</span><strong>{{ ipo.issuePrice === null || ipo.issuePrice === undefined ? '—' : (ipo.issuePrice | currency:'INR':'symbol':'1.0-2') }}</strong></div>
+                    <div><span>Listing price</span><strong>{{ ipo.listingPrice === null || ipo.listingPrice === undefined ? '—' : (ipo.listingPrice | currency:'INR':'symbol':'1.0-2') }}</strong></div>
+                    <div><span>Listing gain</span><strong>{{ ipo.listingGainPct === null || ipo.listingGainPct === undefined ? '—' : (ipo.listingGainPct | number:'1.0-2') + '%' }}</strong></div>
+                    <div><span>Last updated</span><strong>{{ formatMarketDate(ipo.updatedAt, true) }}</strong></div>
+                  </div>
+
+                  <div class="ipo-market-signals">
+                    <div class="ipo-gmp-box">
+                      <p class="eyebrow">GREY MARKET PREMIUM · UNOFFICIAL</p>
+                      <strong>{{ ipo.lastGmp === null ? 'Not reported' : (ipo.lastGmp | currency:'INR':'symbol':'1.0-2') }}</strong>
+                      <span>{{ ipo.lastGmpPct === null ? '—' : (ipo.lastGmpPct | number:'1.0-2') + '%' }} implied premium · {{ ipo.gmpSources ?? 0 }} sources</span>
+                      @if (ipo.gmpDisputed) { <span class="ipo-disputed">Sources disagree — treat this GMP as disputed.</span> }
+                      @if (ipo.gmpSpread !== null) { <span>Reported spread: {{ ipo.gmpSpread | currency:'INR':'symbol':'1.0-2' }}</span> }
+                    </div>
+                    <div class="ipo-subscription-box">
+                      <p class="eyebrow">SUBSCRIPTION BY CATEGORY</p>
+                      @if (ipo.subs.length) {
+                        @for (subscription of ipo.subs; track subscription.category) { <div class="subscription-row"><span>{{ subscription.category }}</span><strong>{{ subscription.timesSub === null ? '—' : (subscription.timesSub | number:'1.0-2') + '×' }}</strong></div> }
+                      } @else { <span class="ipo-no-data">No category-wise subscription data reported.</span> }
+                    </div>
+                  </div>
+
+                  <div class="ipo-history">
+                    <h3>GMP history</h3>
+                    @if (ipo.gmp.length) {
+                      <div class="table-scroll"><table><thead><tr><th>Observed (IST)</th><th>Premium</th><th>Implied %</th><th>Source</th></tr></thead><tbody>
+                        @for (entry of ipo.gmp; track $index) { <tr><td>{{ formatMarketDate(entry.observedAt, true) }}</td><td>{{ entry.gmp === null ? '—' : (entry.gmp | currency:'INR':'symbol':'1.0-2') }}</td><td>{{ entry.gmpPct === null ? '—' : (entry.gmpPct | number:'1.0-2') + '%' }}</td><td>{{ entry.source ?? '—' }}{{ entry.unofficial ? ' · unofficial' : '' }}</td></tr> }
+                      </tbody></table></div>
+                    } @else { <p class="ipo-no-data">No GMP history reported for this issue.</p> }
+                  </div>
+                } @else {
+                  <div class="empty-state">Select an IPO to view its issue profile and subscription details.</div>
+                }
+              </article>
+            </section>
+
+            <section class="ipo-bottom-grid">
+              <article class="panel ipo-data-panel">
+                <div class="ipo-section-heading"><div><p class="eyebrow">EXCHANGE DISCLOSURES</p><h2>Bulk &amp; block deals</h2></div><span class="ipo-count">{{ ipoDeals()?.deals?.length ?? 0 }} records</span></div>
+                @if (ipoDealsError()) { <div class="ipo-inline-error" role="alert">{{ ipoDealsError() }}</div> }
+                @else if (ipoDeals()?.deals?.length) {
+                  <div class="table-scroll"><table><thead><tr><th>Date</th><th>Symbol / client</th><th>Type</th><th>Qty</th><th>Price</th><th>Value (Cr)</th><th>Exchange</th></tr></thead><tbody>
+                    @for (deal of ipoDeals()?.deals ?? []; track $index) { <tr><td>{{ formatMarketDate(deal.tradeDate) }}</td><td><strong>{{ deal.symbol }}</strong><br>{{ deal.clientName }}</td><td>{{ deal.kind }} {{ deal.dealType }}</td><td>{{ deal.quantity === null ? '—' : (deal.quantity | number) }}</td><td>{{ deal.price === null ? '—' : (deal.price | currency:'INR':'symbol':'1.0-2') }}</td><td>{{ deal.valueCr === null ? '—' : (deal.valueCr | number:'1.0-2') }}</td><td>{{ deal.exchange }}</td></tr> }
+                  </tbody></table></div>
+                } @else { <div class="empty-state">No bulk or block deals returned.</div> }
+              </article>
+
+              <article class="panel ipo-data-panel">
+                <div class="ipo-section-heading"><div><p class="eyebrow">GMP ACCURACY TRACKER</p><h2>Listing scoreboard</h2></div></div>
+                @if (ipoScoreboardError()) { <div class="ipo-inline-error" role="alert">{{ ipoScoreboardError() }}</div> }
+                @else if (ipoScoreboard(); as scoreboard) {
+                  <div class="scoreboard-summary"><div><span>Scored listings</span><strong>{{ scoreboard.summary.n }}</strong></div><div><span>Direction hit rate</span><strong>{{ scoreboard.summary.directionHitPct === null ? '—' : (scoreboard.summary.directionHitPct | number:'1.0-1') + '%' }}</strong></div><div><span>Avg. absolute error</span><strong>{{ scoreboard.summary.avgAbsErrorPp === null ? '—' : (scoreboard.summary.avgAbsErrorPp | number:'1.0-1') + ' pp' }}</strong></div></div>
+                  @if (scoreboard.rows.length) {
+                    <div class="table-scroll"><table><thead><tr><th>IPO</th><th>GMP implied</th><th>Listing gain</th><th>Error</th><th>Direction</th><th>Listed</th></tr></thead><tbody>
+                      @for (row of scoreboard.rows; track row.slug) { <tr><td>{{ row.name }}</td><td>{{ row.impliedPct === null ? '—' : (row.impliedPct | number:'1.0-2') + '%' }}</td><td>{{ row.actualPct === null ? '—' : (row.actualPct | number:'1.0-2') + '%' }}</td><td>{{ row.errorPp === null ? '—' : (row.errorPp | number:'1.0-2') + ' pp' }}</td><td>{{ row.directionHit === null ? '—' : (row.directionHit ? 'Hit' : 'Miss') }}</td><td>{{ formatMarketDate(row.listedOn) }}</td></tr> }
+                    </tbody></table></div>
+                  } @else { <div class="empty-state">No scored IPO listings yet.</div> }
+                } @else { <div class="empty-state">Loading listing performance…</div> }
+              </article>
+            </section>
+          }
+
+          @if (ipoDisclaimer()) {
+            <footer class="ipo-attribution"><span>Market data by <a href="https://www.xflot.com/api-docs" target="_blank" rel="noopener noreferrer">Xflot ↗</a>. Data refresh is cached for at least 60 seconds.</span><p>{{ ipoDisclaimer() }}</p></footer>
+          }
+        </section>
+      }
+
+      @if (section() === 'account') {
+        <section class="panel account-panel">
+          <div class="panel-heading account-heading"><div><p class="eyebrow">UPSTOX · ACCOUNT SNAPSHOT</p><h2>Broker data</h2></div><span class="read-only-label">READ ONLY</span></div>
+          <div class="resource-tabs" role="tablist" aria-label="Broker data type">
+            @for (resource of resources; track resource.id) { <button type="button" role="tab" [attr.aria-selected]="activeResource() === resource.id" [class.selected]="activeResource() === resource.id" (click)="loadResource(resource.id)">{{ resource.label }}</button> }
+          </div>
+          <div class="data-toolbar"><div><span class="data-title">{{ activeResource() }}</span><span class="data-subtitle">GET /api/v1/broker/{{ activeResource() }}</span></div><button type="button" class="secondary-button" [disabled]="brokerLoading()" (click)="loadResource(activeResource())"><span [class.spinning]="brokerLoading()">↻</span> Refresh data</button></div>
+          @if (brokerLoading()) {
+            <div class="empty-state data-empty">Loading {{ activeResource() }}…</div>
+          } @else if (brokerError()) {
+            <div class="empty-state data-empty error-copy" role="alert">{{ brokerError() }}</div>
+          } @else if (brokerResponse()?.status === 'not_connected' || brokerResponse()?.status === 'not_configured') {
+            <div class="connection-empty"><span class="empty-symbol">—</span><h3>Broker session not connected</h3><p>{{ brokerResponse()?.message ?? 'Configure a valid Upstox access token to load account data.' }}</p><span class="setup-hint">Set UPSTOX_ACCESS_TOKEN in the backend environment.</span></div>
+          } @else if (brokerResponse()?.status === 'error') {
+            <div class="empty-state data-empty error-copy" role="alert">{{ brokerResponse()?.message ?? 'Broker request failed.' }}</div>
+          } @else if (brokerRows.length) {
+            <div class="table-scroll"><table><thead><tr>@for (column of brokerColumns; track column) { <th>{{ column.replaceAll('_', ' ') }}</th> }</tr></thead><tbody>@for (row of brokerRows; track $index) { <tr>@for (column of brokerColumns; track column) { <td>{{ formatValue(row[column]) }}</td> }</tr> }</tbody></table></div>
+          } @else { <div class="empty-state data-empty">No {{ activeResource() }} data returned.</div> }
+        </section>
+      }
+
+      @if (section() === 'system') {
+        <section class="panel system-panel">
+          <div class="panel-heading"><div><p class="eyebrow">LIVE API RESPONSE</p><h2>Dependency checks</h2></div><button type="button" class="secondary-button" [disabled]="statusLoading()" (click)="refreshStatus()"><span [class.spinning]="statusLoading()">↻</span> Recheck</button></div>
+          <div class="system-list">
+            @for (check of readinessChecks; track check.name) { <article class="system-row"><div class="system-row-main"><span class="service-dot" [class.service-ok]="check.status === 'connected'" [class.service-warn]="check.status !== 'connected'"></span><div><h3>{{ check.name }}</h3><p>{{ check.detail || 'No detail supplied' }}</p></div></div><span class="status-pill" [class.good]="check.status === 'connected'">{{ check.status }}</span></article> }
+          </div>
+          <div class="system-meta"><span>Overall status</span><strong>{{ readiness()?.status ?? 'unknown' }}</strong><span>Service</span><strong>{{ health()?.service ?? 'BharatTrade AI' }}</strong></div>
+          <div class="analysis-note system-note"><div class="analysis-mark">i</div><div><strong>Public market quote snapshots</strong><p>Stock → Live uses Yahoo Finance's public chart endpoint without a key. Availability and quote timing are not guaranteed; this is not an exchange-certified streaming feed.</p></div><button type="button" class="text-button" (click)="setSection('stock')">Open Stock → Live</button></div>
+        </section>
+      }
+    </div>
+  </main>
+</div>

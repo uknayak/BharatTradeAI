@@ -1,0 +1,148 @@
+import pytest
+import requests
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+
+def _chart_response(symbol, last_price, previous_close, timestamp=1793613672):
+    return {
+        "chart": {
+            "result": [
+                {
+                    "meta": {
+                        "symbol": symbol,
+                        "regularMarketPrice": last_price,
+                        "regularMarketTime": timestamp,
+                        "regularMarketDayOpen": previous_close - 10,
+                        "regularMarketDayHigh": last_price + 5,
+                        "regularMarketDayLow": previous_close - 15,
+                        "regularMarketVolume": 123456,
+                        "chartPreviousClose": previous_close,
+                    },
+                    "timestamp": [timestamp - 60, timestamp],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "close": [last_price - 1, last_price],
+                                "open": [previous_close, previous_close],
+                                "high": [last_price, last_price + 5],
+                                "low": [previous_close - 15, previous_close - 10],
+                                "volume": [1000, 2000],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "error": None,
+        }
+    }
+
+
+def test_public_live_quotes_normalize_data_and_cache_snapshot(monkeypatch):
+    from app.services.market import live_quotes
+
+    calls = []
+
+    class DummyResponse:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return _chart_response(self.symbol, 25000, 24900)
+
+    def fake_get(url, params, headers, timeout):
+        symbol = url.rsplit("/", 1)[-1]
+        calls.append((symbol, params, headers, timeout))
+        return DummyResponse(symbol)
+
+    monkeypatch.setattr(live_quotes.requests, "get", fake_get)
+    monkeypatch.setattr(live_quotes, "_cache", None)
+
+    first = live_quotes.fetch_live_quotes()
+    second = live_quotes.fetch_live_quotes()
+    nifty = next(row for row in first["quotes"] if row["symbol"] == "NIFTY 50")
+
+    assert first["status"] == "ok"
+    assert first["provider"] == "Yahoo Finance"
+    assert first["providerUrl"] == "https://finance.yahoo.com/"
+    assert first["warnings"] == []
+    assert len(first["quotes"]) == len(live_quotes.WATCHLIST)
+    assert nifty["lastPrice"] == 25000
+    assert nifty["change"] == 100
+    assert nifty["changePct"] == pytest.approx(100 / 24900 * 100)
+    assert nifty["open"] == 24890
+    assert nifty["high"] == 25005
+    assert nifty["low"] == 24885
+    assert nifty["previousClose"] == 24900
+    assert nifty["volume"] == 123456
+    assert nifty["timestamp"] == "2026-11-02T10:01:12+00:00"
+    assert all(params == {"range": "1d", "interval": "1m"} for _, params, _, _ in calls)
+    assert all(headers["Accept"] == "application/json" and timeout == 10 for _, _, headers, timeout in calls)
+    assert second is first
+    assert len(calls) == len(live_quotes.WATCHLIST)
+
+
+def test_public_live_quotes_return_partial_data_and_warnings(monkeypatch):
+    from app.services.market import live_quotes
+
+    def fake_get(url, params, headers, timeout):
+        if url.endswith("/%5ENSEI"):
+            raise requests.Timeout("provider timeout")
+
+        symbol = url.rsplit("/", 1)[-1]
+
+        class DummyResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return _chart_response(symbol, 100, 90)
+
+        return DummyResponse()
+
+    monkeypatch.setattr(live_quotes.requests, "get", fake_get)
+    monkeypatch.setattr(live_quotes, "_cache", None)
+
+    response = live_quotes.fetch_live_quotes()
+
+    assert response["status"] == "ok"
+    assert len(response["quotes"]) == len(live_quotes.WATCHLIST) - 1
+    assert len(response["warnings"]) == 1
+    assert response["warnings"][0].startswith("NIFTY 50:")
+
+
+def test_live_quotes_endpoint_returns_public_snapshot(monkeypatch):
+    result = {
+        "status": "ok",
+        "provider": "Yahoo Finance",
+        "providerUrl": "https://finance.yahoo.com/",
+        "refreshedAt": "2026-11-02T10:00:00+00:00",
+        "quotes": [],
+        "warnings": [],
+    }
+    monkeypatch.setattr("app.api.routes.stocks.fetch_live_quotes", lambda: result)
+
+    response = TestClient(app).get("/api/v1/stocks/live")
+
+    assert response.status_code == 200
+    assert response.json() == result
+
+
+def test_live_quotes_endpoint_surfaces_total_provider_failure(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.routes.stocks.fetch_live_quotes",
+        lambda: {
+            "status": "error",
+            "provider": "Yahoo Finance",
+            "message": "Yahoo Finance could not return any market quotes.",
+        },
+    )
+
+    response = TestClient(app).get("/api/v1/stocks/live")
+
+    assert response.status_code == 502
+    assert "Yahoo Finance could not return" in response.json()["detail"]

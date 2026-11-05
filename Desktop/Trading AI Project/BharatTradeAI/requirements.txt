@@ -1,0 +1,35 @@
+# Core app runtime
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+python-multipart==0.0.9
+
+# Data and HTTP
+pandas==2.2.2
+numpy==2.1.1
+requests==2.32.3
+httpx==0.27.2
+ta==0.11.0
+scikit-learn==1.5.2
+xgboost==2.1.1
+langgraph>=0.2.0,<1.0.0
+torch==2.6.0
+transformers==4.48.3
+
+# Database and cache
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+redis==5.1.0
+
+# Notifications and testing
+discord.py==2.4.0
+python-telegram-bot==21.6
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# Planned later for ML phase
+# scikit-learn==1.5.2
+# xgboost==2.1.1
+# lightgbm==4.5.0
