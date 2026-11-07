@@ -1,6 +1,7 @@
 """Daily OHLCV history from the same Yahoo chart endpoint used by live quotes."""
 
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,8 +19,12 @@ from app.services.market.models import Candle, MarketDataSync
 
 TIMEFRAME = "1d"
 HISTORY_RANGE = "5y"
+INTRADAY_RANGES = {"1m": "1d", "5m": "5d", "15m": "1mo"}
+INTRADAY_CACHE_TTL_SECONDS = 60
 SYNC_COOLDOWN = timedelta(minutes=15)
 _sync_lock = threading.Lock()
+_intraday_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_intraday_cache_lock = threading.Lock()
 
 
 class SyncCooldownError(Exception):
@@ -333,3 +338,79 @@ def get_daily_history(symbol: str, limit: int = 100) -> dict[str, Any]:
         "syncError": sync_state.error if sync_state else None,
         "candles": candles,
     }
+
+
+def get_intraday_history(symbol: str, interval: str = "5m") -> dict[str, Any]:
+    """Fetch a short intraday OHLCV window directly from the existing Yahoo adapter."""
+    instrument = _instrument(symbol)
+    if instrument is None:
+        raise ValueError(f"Unsupported market symbol: {symbol}.")
+    if interval not in INTRADAY_RANGES:
+        raise ValueError("Intraday interval must be 1m, 5m, or 15m.")
+
+    cache_key = (instrument["symbol"], interval)
+    now_monotonic = time.monotonic()
+    with _intraday_cache_lock:
+        cached = _intraday_cache.get(cache_key)
+        if cached and now_monotonic - cached[0] < INTRADAY_CACHE_TTL_SECONDS:
+            return {
+                **cached[1],
+                "cacheAgeSeconds": max(0, int(now_monotonic - cached[0])),
+            }
+
+    try:
+        result = _fetch_chart_result(
+            instrument["yahoo_symbol"],
+            {"range": INTRADAY_RANGES[interval], "interval": interval},
+        )
+        bars = _parse_daily_bars(result)
+        if not bars:
+            raise ValueError(f"No valid intraday OHLCV data returned for {instrument['symbol']}.")
+    except (requests.RequestException, ValueError):
+        if cached is None:
+            raise
+        return {
+            **cached[1],
+            "freshness": "stale",
+            "warning": "Yahoo Finance is unavailable; showing the last successful intraday bars.",
+            "cacheAgeSeconds": max(0, int(now_monotonic - cached[0])),
+        }
+    retrieved_at = datetime.now(timezone.utc)
+    bars = [bar for bar in bars if bar["candle_time"].astimezone(timezone.utc) <= retrieved_at]
+    latest = bars[-1]["candle_time"] if bars else None
+    candles = [
+        {
+            "timestamp": _response_datetime(bar["candle_time"]),
+            "open": bar["open"],
+            "high": bar["high"],
+            "low": bar["low"],
+            "close": bar["close"],
+            "volume": bar["volume"],
+        }
+        for bar in bars
+    ]
+    if latest is None:
+        freshness = "future_timestamp"
+        provider_timestamp = None
+        warning = "Yahoo Finance returned only future-dated intraday bars; they were excluded."
+    else:
+        provider_timestamp = _response_datetime(latest)
+        age = retrieved_at - latest.astimezone(timezone.utc)
+        freshness = "fresh" if age <= timedelta(minutes=15) else "stale"
+        warning = "Yahoo Finance intraday bars may be delayed or unavailable; this is not an exchange feed." if freshness != "fresh" else None
+    response = {
+        "status": "ok",
+        "provider": "Yahoo Finance",
+        "symbol": instrument["symbol"],
+        "exchange": instrument["exchange"],
+        "interval": interval,
+        "range": INTRADAY_RANGES[interval],
+        "retrievedAt": retrieved_at.isoformat(),
+        "providerTimestamp": provider_timestamp,
+        "freshness": freshness,
+        "warning": warning,
+        "candles": candles,
+    }
+    with _intraday_cache_lock:
+        _intraday_cache[cache_key] = (time.monotonic(), response)
+    return response

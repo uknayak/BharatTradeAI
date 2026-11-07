@@ -177,6 +177,11 @@ def collect_news(
                 "label": "POSITIVE" if article.tone >= 1 else "NEGATIVE" if article.tone <= -1 else "NEUTRAL",
                 "score": tone_score,
             }
+        sentiment_source = (
+            "provider"
+            if article.sentiment_label in {"POSITIVE", "NEGATIVE", "NEUTRAL"}
+            else "provider_tone" if article.tone is not None else "keyword_heuristic"
+        )
         enriched.append({
             **asdict(article),
             "id": _fingerprint(article),
@@ -184,6 +189,7 @@ def collect_news(
             "listings": listings,
             "unmatched_symbols": unmatched_symbols,
             "sentiment": sentiment,
+            "sentiment_source": sentiment_source,
             "event": classify_event(article.title, article.description),
         })
     return enriched
@@ -237,7 +243,11 @@ def fetch_market_news(
     if cached:
         _NEWS_CACHE.move_to_end(cache_key)
         if now - cached[0] < NEWS_CACHE_TTL_SECONDS:
-            return {**cached[1], "cache_status": "fresh"}
+            return {
+                **cached[1],
+                "cache_status": "fresh",
+                "cache_age_seconds": max(0, int(now - cached[0])),
+            }
 
     try:
         if newsdata_api_key:
@@ -274,6 +284,7 @@ def fetch_market_news(
             return {
                 **cached[1],
                 "cache_status": "stale",
+                "cache_age_seconds": max(0, int(now - cached[0])),
                 "cache_warning": f"{provider} is unavailable; showing a previously fetched result.",
             }
         raise
@@ -308,7 +319,11 @@ def fetch_market_news(
             for item in raw_articles
             if isinstance(item, Mapping) and item.get("title")
         ]
-    articles = collect_news(records)
+    retrieved_at = datetime.now(timezone.utc).isoformat()
+    articles = [
+        {**article, "retrieved_at": retrieved_at}
+        for article in collect_news(records)
+    ]
     counts = {
         label.lower(): sum(article["sentiment"]["label"] == label for article in articles)
         for label in ("POSITIVE", "NEGATIVE", "NEUTRAL")
@@ -329,12 +344,14 @@ def fetch_market_news(
         "sentiment_counts": counts,
         "headline_bias": overall,
         "articles": articles,
+        "retrieved_at": retrieved_at,
         "notice": "Headline sentiment describes news text; it is not a price forecast or trading recommendation.",
     }
     if newsdata_api_key:
         result["notice"] += " NewsData.io free-tier coverage is delayed by 12 hours."
-    _NEWS_CACHE[cache_key] = (time.monotonic(), result)
+    cache_saved_at = time.monotonic()
+    _NEWS_CACHE[cache_key] = (cache_saved_at, result)
     _NEWS_CACHE.move_to_end(cache_key)
     while len(_NEWS_CACHE) > NEWS_CACHE_MAX_ITEMS:
         _NEWS_CACHE.popitem(last=False)
-    return {**result, "cache_status": "fresh"}
+    return {**result, "cache_status": "fresh", "cache_age_seconds": 0}

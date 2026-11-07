@@ -26,6 +26,7 @@ export interface NewsArticle {
   url: string;
   source: string;
   published_at: string | null;
+  retrieved_at?: string | null;
   companies: string[];
   listings: { symbol: string; name: string; exchanges: string[]; match_type: 'provider' | 'headline' }[];
   unmatched_symbols: string[];
@@ -34,6 +35,7 @@ export interface NewsArticle {
   symbols: string[];
   market_ids: string[];
   sentiment: { label: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL'; score: number };
+  sentiment_source?: 'provider' | 'provider_tone' | 'keyword_heuristic';
 }
 
 export interface NewsResponse {
@@ -47,6 +49,8 @@ export interface NewsResponse {
   articles: NewsArticle[];
   notice: string;
   cache_status?: 'fresh' | 'stale';
+  cache_age_seconds?: number;
+  retrieved_at?: string | null;
   cache_warning?: string;
 }
 
@@ -106,12 +110,23 @@ export interface IpoListResponse {
   count: number;
   ipos: IpoSummary[];
   disclaimer: string;
+  dataFreshness?: IpoDataFreshness;
+}
+
+export interface IpoDataFreshness {
+  status: 'fresh' | 'stale';
+  provider: string;
+  lastSuccessfulFetch: string;
+  cacheAgeSeconds: number;
+  providerUpdatedAt: string | null;
+  warning: string | null;
 }
 
 export interface IpoDetailResponse {
   ok: boolean;
   ipo: IpoDetail;
   disclaimer: string;
+  dataFreshness?: IpoDataFreshness;
 }
 
 export interface MarketDeal {
@@ -130,6 +145,7 @@ export interface MarketDealsResponse {
   ok: boolean;
   deals: MarketDeal[];
   disclaimer: string;
+  dataFreshness?: IpoDataFreshness;
 }
 
 export interface IpoScoreboardRow {
@@ -150,6 +166,7 @@ export interface IpoScoreboardResponse {
   summary: { n: number; avgAbsErrorPp: number | null; directionHitPct: number | null };
   rows: IpoScoreboardRow[];
   disclaimer: string;
+  dataFreshness?: IpoDataFreshness;
 }
 
 export interface LiveStockQuote {
@@ -166,12 +183,18 @@ export interface LiveStockQuote {
   previousClose: number | null;
   volume: number | null;
   timestamp: string | null;
+  providerTimestamp?: string | null;
+  timestampStatus?: 'fresh' | 'delayed' | 'stale' | 'unavailable' | 'clock_skew' | 'future_timestamp';
+  timestampWarning?: string | null;
 }
 
 export interface LiveStockQuotesResponse {
   status: 'ok';
   provider: 'Yahoo Finance';
   refreshedAt: string;
+  lastSuccessfulRefresh?: string | null;
+  cacheStatus?: 'fresh' | 'stale';
+  cacheAgeSeconds?: number;
   providerUrl: string;
   quotes: LiveStockQuote[];
   warnings: string[];
@@ -201,6 +224,29 @@ export interface StockHistoryResponse {
   syncStatus: 'ok' | 'error' | 'never';
   syncError: string | null;
   candles: StockHistoryCandle[];
+}
+
+export interface StockIntradayCandle {
+  timestamp: string | null;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+}
+
+export interface StockIntradayResponse {
+  status: 'ok';
+  provider: 'Yahoo Finance';
+  symbol: string;
+  exchange: string;
+  interval: '1m' | '5m' | '15m';
+  range: '1d' | '5d' | '1mo';
+  retrievedAt: string;
+  providerTimestamp: string | null;
+  freshness: 'fresh' | 'stale' | 'future_timestamp';
+  warning: string | null;
+  candles: StockIntradayCandle[];
 }
 
 export interface StockHistorySyncResponse {
@@ -495,6 +541,13 @@ export class ApiService {
     return firstValueFrom(this.http.get<StockHistoryResponse>(
       `/api/v1/stocks/history/${encodeURIComponent(symbol)}`,
       { params: { limit: 120 } }
+    ));
+  }
+
+  getStockIntraday(symbol: string, interval: '1m' | '5m' | '15m' = '5m'): Promise<StockIntradayResponse> {
+    return firstValueFrom(this.http.get<StockIntradayResponse>(
+      `/api/v1/stocks/intraday/${encodeURIComponent(symbol)}`,
+      { params: { interval } }
     ));
   }
 

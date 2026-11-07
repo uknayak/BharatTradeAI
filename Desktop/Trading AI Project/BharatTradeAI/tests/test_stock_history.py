@@ -189,6 +189,105 @@ def test_history_api_validates_symbols_and_sync_endpoint(monkeypatch):
     assert sync.json()["syncedSymbols"] == ["RELIANCE"]
 
 
+def test_intraday_history_uses_bounded_yahoo_chart_and_cache(monkeypatch):
+    now = datetime.now(timezone.utc)
+    epoch = int(now.timestamp())
+    instrument = historical_data.WATCHLIST[2]
+    calls = []
+
+    def fake_chart(symbol, params):
+        calls.append((symbol, params))
+        return {
+            "timestamp": [epoch - 300, epoch],
+            "indicators": {
+                "quote": [{
+                    "open": [100, 101],
+                    "high": [102, 103],
+                    "low": [99, 100],
+                    "close": [101, 102],
+                    "volume": [1000, 1200],
+                }]
+            },
+        }
+
+    monkeypatch.setattr(historical_data, "_fetch_chart_result", fake_chart)
+    historical_data._intraday_cache.clear()
+
+    first = historical_data.get_intraday_history(instrument["symbol"], "5m")
+    second = historical_data.get_intraday_history(instrument["symbol"], "5m")
+
+    assert first["provider"] == "Yahoo Finance"
+    assert first["interval"] == "5m"
+    assert first["range"] == "5d"
+    assert first["candles"][-1]["close"] == 102
+    assert first["freshness"] == "fresh"
+    assert second["cacheAgeSeconds"] >= 0
+    assert calls == [(instrument["yahoo_symbol"], {"range": "5d", "interval": "5m"})]
+
+
+def test_intraday_endpoint_rejects_unsupported_interval():
+    response = TestClient(app).get("/api/v1/stocks/intraday/RELIANCE?interval=1h")
+
+    assert response.status_code == 422
+
+
+def test_intraday_history_uses_stale_cache_when_provider_fails(monkeypatch):
+    instrument = historical_data.WATCHLIST[2]
+    historical_data._intraday_cache.clear()
+    now = datetime.now(timezone.utc)
+    epoch = int(now.timestamp())
+    valid_result = {
+        "timestamp": [epoch - 300, epoch],
+        "indicators": {
+            "quote": [{
+                "open": [100, 101],
+                "high": [102, 103],
+                "low": [99, 100],
+                "close": [101, 102],
+                "volume": [1000, 1200],
+            }]
+        },
+    }
+    monkeypatch.setattr(historical_data, "_fetch_chart_result", lambda *_: valid_result)
+    historical_data.get_intraday_history(instrument["symbol"])
+    monkeypatch.setattr(historical_data, "INTRADAY_CACHE_TTL_SECONDS", 0)
+
+    def fail(*_args):
+        raise requests.Timeout("provider timeout")
+
+    monkeypatch.setattr(historical_data, "_fetch_chart_result", fail)
+    stale = historical_data.get_intraday_history(instrument["symbol"])
+
+    assert stale["freshness"] == "stale"
+    assert stale["candles"][-1]["close"] == 102
+    assert "last successful" in stale["warning"]
+
+
+def test_intraday_history_excludes_future_dated_bars(monkeypatch):
+    instrument = historical_data.WATCHLIST[2]
+    historical_data._intraday_cache.clear()
+    epoch = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+    result = {
+        "timestamp": [epoch],
+        "indicators": {
+            "quote": [{
+                "open": [100],
+                "high": [102],
+                "low": [99],
+                "close": [101],
+                "volume": [1000],
+            }]
+        },
+    }
+    monkeypatch.setattr(historical_data, "_fetch_chart_result", lambda *_: result)
+
+    response = historical_data.get_intraday_history(instrument["symbol"])
+
+    assert response["freshness"] == "future_timestamp"
+    assert response["candles"] == []
+    assert response["providerTimestamp"] is None
+
+
 def test_history_api_translates_invalid_symbol(monkeypatch):
     def invalid_symbol(symbol, limit):
         assert limit > 0

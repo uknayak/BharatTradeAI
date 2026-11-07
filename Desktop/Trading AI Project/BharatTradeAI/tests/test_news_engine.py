@@ -14,6 +14,7 @@ def test_news_collection_deduplicates_maps_company_and_enriches_article():
     assert len(result) == 2
     assert result[0]["companies"] == ["TCS"]
     assert result[0]["sentiment"]["label"] == "POSITIVE"
+    assert result[0]["sentiment_source"] == "keyword_heuristic"
     assert result[0]["event"] == "EARNINGS"
     assert result[1]["companies"] == ["RELIANCE"]
     assert result[1]["sentiment"]["label"] == "NEGATIVE"
@@ -73,6 +74,9 @@ def test_market_news_adapter_uses_gdelt_tone_and_maps_articles(monkeypatch):
     assert result["articles"][0]["sentiment"]["label"] == "POSITIVE"
     assert result["articles"][0]["listings"][0]["match_type"] == "headline"
     assert result["articles"][0]["published_at"] == "2026-10-16T11:00:00+00:00"
+    assert result["articles"][0]["retrieved_at"]
+    assert result["retrieved_at"]
+    assert result["articles"][0]["sentiment_source"] == "provider_tone"
 
 
 def test_market_news_uses_newsdata_market_tickers_and_maps_sentiment(monkeypatch):
@@ -116,6 +120,7 @@ def test_market_news_uses_newsdata_market_tickers_and_maps_sentiment(monkeypatch
     assert result["articles"][0]["source"] == "Example Finance"
     assert result["articles"][0]["companies"] == ["TCS"]
     assert result["articles"][0]["sentiment"]["label"] == "POSITIVE"
+    assert result["articles"][0]["sentiment_source"] == "provider"
     assert result["articles"][0]["listings"] == [
         {
             "symbol": "TCS",

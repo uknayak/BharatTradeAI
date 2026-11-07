@@ -115,6 +115,51 @@ def test_public_live_quotes_return_partial_data_and_warnings(monkeypatch):
     assert response["warnings"][0].startswith("NIFTY 50:")
 
 
+def test_future_provider_quote_timestamp_is_not_exposed_as_market_time(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.services.market import live_quotes
+
+    now = datetime(2026, 11, 6, 10, tzinfo=timezone.utc)
+    future_timestamp = int((now + timedelta(minutes=5)).timestamp())
+
+    monkeypatch.setattr(
+        live_quotes,
+        "_fetch_chart_result",
+        lambda *_: _chart_response("RELIANCE.NS", 100, 90, future_timestamp)["chart"]["result"][0],
+    )
+
+    quote = live_quotes._fetch_quote(live_quotes.WATCHLIST[2], now=now)
+
+    assert quote["timestamp"] is None
+    assert quote["lastPrice"] == 100
+    assert quote["changePct"] == pytest.approx(10 / 90 * 100)
+    assert quote["providerTimestamp"] == "2026-11-06T10:05:00+00:00"
+    assert quote["timestampStatus"] == "future_timestamp"
+    assert "ahead" in quote["timestampWarning"]
+
+
+def test_slight_provider_clock_skew_keeps_quote_and_clamps_display_time(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.services.market import live_quotes
+
+    now = datetime(2026, 11, 6, 10, tzinfo=timezone.utc)
+    provider_time = int((now + timedelta(seconds=30)).timestamp())
+    monkeypatch.setattr(
+        live_quotes,
+        "_fetch_chart_result",
+        lambda *_: _chart_response("RELIANCE.NS", 100, 90, provider_time)["chart"]["result"][0],
+    )
+
+    quote = live_quotes._fetch_quote(live_quotes.WATCHLIST[2], now=now)
+
+    assert quote["lastPrice"] == 100
+    assert quote["changePct"] == pytest.approx(10 / 90 * 100)
+    assert quote["timestamp"] == now.isoformat()
+    assert quote["providerTimestamp"] == "2026-11-06T10:00:30+00:00"
+    assert quote["timestampStatus"] == "clock_skew"
+    assert "server time" in quote["timestampWarning"]
+
+
 def test_live_quotes_endpoint_returns_public_snapshot(monkeypatch):
     result = {
         "status": "ok",

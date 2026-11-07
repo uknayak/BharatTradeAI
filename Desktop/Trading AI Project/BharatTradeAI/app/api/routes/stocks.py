@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from fastapi import Query
+import requests
 
 from app.services.market.historical_data import (
     SyncCooldownError,
     SyncInProgressError,
     get_daily_history,
+    get_intraday_history,
     sync_daily_history,
 )
 from app.services.market.live_quotes import fetch_live_quotes
@@ -26,6 +28,19 @@ def daily_stock_history(symbol: str, limit: int = Query(default=100, ge=1, le=50
         return get_daily_history(symbol, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/intraday/{symbol}")
+def intraday_stock_history(
+    symbol: str,
+    interval: str = Query(default="5m", pattern="^(1m|5m|15m)$"),
+) -> dict:
+    try:
+        return get_intraday_history(symbol, interval=interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Yahoo Finance intraday data is currently unavailable.") from exc
 
 
 @router.post("/history/sync")

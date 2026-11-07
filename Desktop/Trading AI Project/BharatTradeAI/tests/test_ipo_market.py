@@ -62,10 +62,48 @@ def test_market_data_cache_limits_upstream_polling(monkeypatch):
     monkeypatch.setattr(ipo_market.requests, "get", fake_get)
     monkeypatch.setattr(ipo_market, "_cache", {})
 
-    expected = {"ok": True, "count": 0, "disclaimer": "Xflot disclaimer"}
-    assert ipo_market.fetch_market_data("scoreboard") == expected
-    assert ipo_market.fetch_market_data("scoreboard") == expected
+    first = ipo_market.fetch_market_data("scoreboard")
+    second = ipo_market.fetch_market_data("scoreboard")
+    assert first["ok"] is True
+    assert first["dataFreshness"]["provider"] == "Xflot"
+    assert first["dataFreshness"]["status"] == "fresh"
+    assert first["dataFreshness"]["cacheAgeSeconds"] == 0
+    assert second["dataFreshness"]["status"] == "fresh"
+    assert second["dataFreshness"]["cacheAgeSeconds"] >= 0
     assert calls == 1
+
+
+def test_market_data_returns_last_success_with_stale_status(monkeypatch):
+    from app.data import ipo_market
+
+    monkeypatch.setattr(ipo_market, "_cache", {})
+    responses = iter([
+        {"ok": True, "disclaimer": "Xflot disclaimer"},
+        requests.Timeout("upstream timeout"),
+    ])
+
+    def fake_get(url, timeout):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+
+        class PayloadResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return response
+
+        return PayloadResponse()
+
+    monkeypatch.setattr(ipo_market.requests, "get", fake_get)
+    first = ipo_market.fetch_market_data("ipos")
+    monkeypatch.setattr(ipo_market, "CACHE_TTL_SECONDS", 0)
+    stale = ipo_market.fetch_market_data("ipos")
+
+    assert first["dataFreshness"]["status"] == "fresh"
+    assert stale["dataFreshness"]["status"] == "stale"
+    assert "last successful" in stale["dataFreshness"]["warning"]
 
 
 def test_market_proxy_reports_upstream_errors_and_rejects_bad_slugs(monkeypatch):

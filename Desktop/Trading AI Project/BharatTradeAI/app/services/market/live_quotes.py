@@ -3,7 +3,7 @@
 import math
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -11,6 +11,9 @@ import requests
 
 CACHE_TTL_SECONDS = 60
 REQUEST_TIMEOUT_SECONDS = 10
+FUTURE_CLOCK_SKEW_TOLERANCE = timedelta(minutes=2)
+QUOTE_FRESH_FOR = timedelta(minutes=5)
+QUOTE_STALE_AFTER = timedelta(minutes=15)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 YAHOO_FINANCE_URL = "https://finance.yahoo.com/"
 WATCHLIST = (
@@ -79,7 +82,25 @@ def _fetch_chart_result(yahoo_symbol: str, params: dict[str, str]) -> dict[str, 
     return results[0]
 
 
-def _fetch_quote(instrument: dict[str, str]) -> dict[str, Any]:
+def _quote_freshness(timestamp: str | None, now: datetime) -> tuple[str, str | None]:
+    if timestamp is None:
+        return "unavailable", "Provider did not return a market timestamp."
+    market_time = datetime.fromisoformat(timestamp)
+    if market_time.tzinfo is None:
+        return "unavailable", "Provider timestamp did not include a timezone."
+    age = now.astimezone(timezone.utc) - market_time.astimezone(timezone.utc)
+    if age < timedelta(0):
+        if -age <= FUTURE_CLOCK_SKEW_TOLERANCE:
+            return "clock_skew", "Provider timestamp is slightly ahead; using server time for display."
+        return "future_timestamp", "Provider timestamp is ahead of the server clock."
+    if age <= QUOTE_FRESH_FOR:
+        return "fresh", None
+    if age <= QUOTE_STALE_AFTER:
+        return "delayed", "Provider quote is more than five minutes old."
+    return "stale", "Provider quote is more than fifteen minutes old."
+
+
+def _fetch_quote(instrument: dict[str, str], *, now: datetime | None = None) -> dict[str, Any]:
     result = _fetch_chart_result(instrument["yahoo_symbol"], {"range": "1d", "interval": "1m"})
     meta = result.get("meta")
     if not isinstance(meta, dict):
@@ -106,6 +127,18 @@ def _fetch_quote(instrument: dict[str, str]) -> dict[str, Any]:
 
     change = last_price - previous_close if previous_close is not None else None
     change_pct = (change / previous_close * 100) if change is not None else None
+    provider_timestamp = _market_timestamp(meta.get("regularMarketTime")) or (
+        _market_timestamp(timestamp_series[last_close[0]])
+        if last_close and last_close[0] < len(timestamp_series)
+        else None
+    )
+    fetched_at = now or datetime.now(timezone.utc)
+    timestamp_status, timestamp_warning = _quote_freshness(provider_timestamp, fetched_at)
+    timestamp = (
+        None if timestamp_status == "future_timestamp"
+        else fetched_at.isoformat() if timestamp_status == "clock_skew"
+        else provider_timestamp
+    )
     return {
         "symbol": instrument["symbol"],
         "name": instrument["name"],
@@ -119,8 +152,10 @@ def _fetch_quote(instrument: dict[str, str]) -> dict[str, Any]:
         "low": _number(meta.get("regularMarketDayLow")) or _number(meta.get("regularMarketLow")),
         "previousClose": previous_close,
         "volume": _number(meta.get("regularMarketVolume")),
-        "timestamp": _market_timestamp(meta.get("regularMarketTime"))
-        or (_market_timestamp(timestamp_series[last_close[0]]) if last_close and last_close[0] < len(timestamp_series) else None),
+        "timestamp": timestamp,
+        "providerTimestamp": provider_timestamp,
+        "timestampStatus": timestamp_status,
+        "timestampWarning": timestamp_warning,
     }
 
 
@@ -135,9 +170,10 @@ def fetch_live_quotes() -> dict[str, Any]:
 
         quotes = []
         warnings = []
+        fetched_at = datetime.now(timezone.utc)
         for instrument in WATCHLIST:
             try:
-                quotes.append(_fetch_quote(instrument))
+                quotes.append(_fetch_quote(instrument, now=fetched_at))
             except (requests.RequestException, ValueError) as exc:
                 warnings.append(f"{instrument['symbol']}: {exc}")
 
@@ -145,7 +181,10 @@ def fetch_live_quotes() -> dict[str, Any]:
             "status": "ok" if quotes else "error",
             "provider": "Yahoo Finance",
             "providerUrl": YAHOO_FINANCE_URL,
-            "refreshedAt": datetime.now(timezone.utc).isoformat(),
+            "refreshedAt": fetched_at.isoformat(),
+            "cacheStatus": "fresh",
+            "cacheAgeSeconds": 0,
+            "lastSuccessfulRefresh": fetched_at.isoformat() if quotes else None,
             "quotes": quotes,
             "warnings": warnings,
         }

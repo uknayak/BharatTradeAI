@@ -21,10 +21,13 @@ import {
   LiveStockQuote,
   LiveStockQuotesResponse,
   MarketDealsResponse,
+  NewsArticle,
   NewsResponse,
   ReadinessResponse,
   StockHistoryCandle,
-  StockHistoryResponse
+  StockHistoryResponse,
+  StockIntradayCandle,
+  StockIntradayResponse
 } from './core/api.service';
 
 type Section = 'overview' | 'news' | 'stock' | 'ai-picks' | 'ipos' | 'account' | 'system';
@@ -32,6 +35,8 @@ type BrokerRow = Record<string, unknown>;
 type IpoStatusFilter = 'ALL' | IpoStatus;
 type IpoBoardFilter = 'ALL' | IpoBoard;
 type AiPickExchange = 'ALL' | 'NSE' | 'BSE';
+type NewsRecency = 'ALL' | '24H' | '7D';
+type StockChartView = 'intraday' | 'daily';
 
 interface AiStockPick {
   id: string;
@@ -65,6 +70,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly newsResponse = signal<NewsResponse | null>(null);
   readonly newsLoading = signal(false);
   readonly newsError = signal('');
+  readonly newsSourceFilter = signal('ALL');
+  readonly newsCompanyFilter = signal('ALL');
+  readonly newsRecencyFilter = signal<NewsRecency>('ALL');
   readonly ipoLoading = signal(false);
   readonly ipoError = signal('');
   readonly ipoList = signal<IpoListResponse | null>(null);
@@ -84,6 +92,14 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly stockQuotes = signal<LiveStockQuotesResponse | null>(null);
   readonly stockLoading = signal(false);
   readonly stockError = signal('');
+  readonly stockSearch = signal('');
+  readonly selectedStockSymbol = signal('');
+  readonly stockChartView = signal<StockChartView>('intraday');
+  readonly stockIntraday = signal<StockIntradayResponse | null>(null);
+  readonly stockDailyHistory = signal<StockHistoryResponse | null>(null);
+  readonly stockChartLoading = signal(false);
+  readonly stockChartError = signal('');
+  private stockChartRequestId = 0;
   private stockRefreshTimer: ReturnType<typeof setInterval> | null = null;
   readonly aiPickExchange = signal<AiPickExchange>('ALL');
   readonly aiPickSector = signal('ALL');
@@ -219,7 +235,17 @@ export class AppComponent implements OnInit, OnDestroy {
       (this.aiPickMinProbability() === 0 ||
         (this.aiPickPrediction(pick.symbol)?.status === 'ready' &&
           (this.aiPickPrediction(pick.symbol)?.upward_probability ?? 0) * 100 >= this.aiPickMinProbability()))
-    );
+    ).sort((left, right) => {
+      const leftPrediction = this.aiPickPrediction(left.symbol);
+      const rightPrediction = this.aiPickPrediction(right.symbol);
+      const leftReady = leftPrediction?.status === 'ready';
+      const rightReady = rightPrediction?.status === 'ready';
+      if (leftReady !== rightReady) return leftReady ? -1 : 1;
+      if (leftReady && rightReady) {
+        return (rightPrediction?.upward_probability ?? 0) - (leftPrediction?.upward_probability ?? 0);
+      }
+      return left.companyName.localeCompare(right.companyName);
+    });
   }
 
   get aiStockPicks(): AiStockPick[] {
@@ -547,12 +573,22 @@ export class AppComponent implements OnInit, OnDestroy {
     this.stockLoading.set(true);
     this.stockError.set('');
     try {
-      this.stockQuotes.set(await this.api.getLiveStockQuotes());
+      const quotes = await this.api.getLiveStockQuotes();
+      this.stockQuotes.set(quotes);
+      if (this.section() === 'stock') {
+        const equities = quotes.quotes.filter(quote => quote.type === 'EQUITY');
+        if (!equities.some(quote => quote.symbol === this.selectedStockSymbol())) {
+          this.selectedStockSymbol.set(equities[0]?.symbol ?? '');
+        }
+        if (this.selectedStockSymbol()) void this.loadStockChart();
+      }
+      if (this.section() === 'ai-picks') void this.loadAiStockOpportunities();
       if (this.section() === 'ai-picks' && !this.selectedAiPickId() && this.aiStockPicks.length) {
         this.selectedAiPickId.set(this.aiStockPicks[0].id);
         this.refreshSelectedAiPickHistory();
       }
     } catch (error: unknown) {
+      this.stockQuotes.update(current => current ? { ...current, cacheStatus: 'stale' } : null);
       if (error instanceof HttpErrorResponse && typeof error.error?.detail === 'string') {
         this.stockError.set(error.error.detail);
       } else {
@@ -569,6 +605,124 @@ export class AppComponent implements OnInit, OnDestroy {
 
   get stockRows(): LiveStockQuote[] {
     return (this.stockQuotes()?.quotes ?? []).filter(quote => quote.type === 'EQUITY');
+  }
+
+  get filteredStockRows(): LiveStockQuote[] {
+    const query = this.stockSearch().trim().toLowerCase();
+    return this.stockRows.filter(quote =>
+      !query || `${quote.symbol} ${quote.name}`.toLowerCase().includes(query)
+    );
+  }
+
+  get selectedStockQuote(): LiveStockQuote | null {
+    return this.stockRows.find(quote => quote.symbol === this.selectedStockSymbol()) ?? null;
+  }
+
+  get stockChartCandles(): (StockIntradayCandle | StockHistoryCandle)[] {
+    return this.stockChartView() === 'intraday'
+      ? this.stockIntraday()?.candles ?? []
+      : this.stockDailyHistory()?.candles ?? [];
+  }
+
+  get stockChartPolyline(): string {
+    const candles = this.stockChartCandles.filter(candle => Number.isFinite(candle.close));
+    if (candles.length < 2) return '';
+    const prices = candles.map(candle => candle.close);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const spread = max - min || 1;
+    return prices.map((price, index) => {
+      const x = 8 + (index / (prices.length - 1)) * 784;
+      const y = 12 + ((max - price) / spread) * 176;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  }
+
+  get stockChartLastTime(): string | null {
+    const candles = this.stockChartCandles;
+    return candles.length ? candles[candles.length - 1].timestamp : null;
+  }
+
+  get stockChartFreshness(): string {
+    return this.stockChartView() === 'intraday'
+      ? this.stockIntraday()?.freshness ?? 'unavailable'
+      : this.stockDailyHistory()?.freshness ?? 'unavailable';
+  }
+
+  quoteAgeSeconds(quote: LiveStockQuote): number | null {
+    if (!quote.timestamp) return null;
+    const timestamp = Date.parse(quote.timestamp);
+    return Number.isFinite(timestamp) ? Math.max(0, Math.floor((Date.now() - timestamp) / 1000)) : null;
+  }
+
+  get isIndianMarketOpen(): boolean {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    const minuteOfDay = Number(values['hour']) * 60 + Number(values['minute']);
+    return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(values['weekday']) &&
+      minuteOfDay >= 9 * 60 + 15 && minuteOfDay < 15 * 60 + 30;
+  }
+
+  updateStockSearch(value: string): void {
+    this.stockSearch.set(value);
+  }
+
+  setSelectedStockSymbol(symbol: string): void {
+    if (this.stockRows.some(quote => quote.symbol === symbol)) {
+      if (symbol !== this.selectedStockSymbol()) {
+        this.stockIntraday.set(null);
+        this.stockDailyHistory.set(null);
+      }
+      this.selectedStockSymbol.set(symbol);
+      void this.loadStockChart();
+    }
+  }
+
+  setStockChartView(view: string): void {
+    if (view === 'intraday' || view === 'daily') {
+      this.stockChartView.set(view);
+      void this.loadStockChart();
+    }
+  }
+
+  async loadStockChart(): Promise<void> {
+    const symbol = this.selectedStockSymbol();
+    if (!symbol) return;
+    const requestId = ++this.stockChartRequestId;
+    this.stockChartLoading.set(true);
+    this.stockChartError.set('');
+    try {
+      if (this.stockChartView() === 'intraday') {
+        const result = await this.api.getStockIntraday(symbol, '5m');
+        if (requestId === this.stockChartRequestId) this.stockIntraday.set(result);
+      } else {
+        const result = await this.api.getStockHistory(symbol);
+        if (requestId === this.stockChartRequestId) this.stockDailyHistory.set(result);
+      }
+    } catch (error: unknown) {
+      if (requestId === this.stockChartRequestId) {
+        if (this.stockChartView() === 'intraday') {
+          this.stockIntraday.update(current => current ? {
+            ...current,
+            freshness: 'stale',
+            warning: 'The latest intraday refresh failed; showing the previous bars.'
+          } : null);
+        } else {
+          this.stockDailyHistory.update(current => current ? { ...current, freshness: 'stale' } : null);
+        }
+        this.stockChartError.set(error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail
+          : `Yahoo Finance ${this.stockChartView()} bars could not be loaded.`);
+      }
+    } finally {
+      if (requestId === this.stockChartRequestId) this.stockChartLoading.set(false);
+    }
   }
 
   private stopStockRefresh(): void {
@@ -675,12 +829,14 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   get filteredIpos() {
+    const statusPriority: Record<IpoStatus, number> = { OPEN: 0, UPCOMING: 1, CLOSED: 2, LISTED: 3 };
     return (this.ipoList()?.ipos ?? []).filter(ipo =>
       (this.ipoStatusFilter() === 'ALL' || ipo.status === this.ipoStatusFilter()) &&
       (this.ipoBoardFilter() === 'ALL' || ipo.board === this.ipoBoardFilter()) &&
       [ipo.name, ipo.slug, ipo.symbol ?? '', ipo.sector ?? '']
         .some(value => value.toLowerCase().includes(this.ipoSearchQuery().trim().toLowerCase()))
-    );
+    ).sort((left, right) => statusPriority[left.status] - statusPriority[right.status] ||
+      (left.openDate ?? '').localeCompare(right.openDate ?? ''));
   }
 
   get selectedIpo(): IpoDetail | null {
@@ -733,6 +889,68 @@ export class AppComponent implements OnInit, OnDestroy {
 
   updateNewsQuery(value: string): void {
     this.newsQuery.set(value);
+  }
+
+  setNewsSource(value: string): void {
+    this.newsSourceFilter.set(value);
+  }
+
+  setNewsCompany(value: string): void {
+    this.newsCompanyFilter.set(value);
+  }
+
+  setNewsRecency(value: string): void {
+    if (value === 'ALL' || value === '24H' || value === '7D') {
+      this.newsRecencyFilter.set(value);
+    }
+  }
+
+  get newsSources(): string[] {
+    return [...new Set((this.newsResponse()?.articles ?? [])
+      .map(article => article.source)
+      .filter((source): source is string => Boolean(source)))].sort();
+  }
+
+  get newsCompanies(): { symbol: string; name: string }[] {
+    const companies = new Map<string, string>();
+    for (const article of this.newsResponse()?.articles ?? []) {
+      for (const listing of article.listings) companies.set(listing.symbol, listing.name);
+    }
+    return [...companies].map(([symbol, name]) => ({ symbol, name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  get filteredNewsArticles() {
+    const cutoff = this.newsRecencyFilter() === '24H'
+      ? Date.now() - 24 * 60 * 60 * 1000
+      : this.newsRecencyFilter() === '7D' ? Date.now() - 7 * 24 * 60 * 60 * 1000 : null;
+    return (this.newsResponse()?.articles ?? []).filter(article => {
+      const matchesSource = this.newsSourceFilter() === 'ALL' || article.source === this.newsSourceFilter();
+      const matchesCompany = this.newsCompanyFilter() === 'ALL' ||
+        article.listings.some(listing => listing.symbol === this.newsCompanyFilter());
+      if (!matchesSource || !matchesCompany) return false;
+      if (cutoff === null) return true;
+      const published = article.published_at ? Date.parse(article.published_at) : NaN;
+      return Number.isFinite(published) && published >= cutoff;
+    });
+  }
+
+  newsWhyItMatters(article: NewsArticle): string | null {
+    const companyNames = article.listings.map(listing => listing.name);
+    const subjects = [...new Set(companyNames)].join(', ');
+    if (!subjects || article.event === 'GENERAL') return null;
+    const eventContext: Record<string, string> = {
+      EARNINGS: 'results-related coverage; check the original report for reported figures.',
+      MERGER_ACQUISITION: 'merger or acquisition-related coverage; review the source for transaction details.',
+      REGULATORY: 'regulatory coverage that may warrant review of the original announcement.',
+      CONTRACT: 'contract or partnership-related coverage; confirm details in the original source.',
+      MACRO: 'macro or policy coverage that may affect broader market context.',
+      DIVIDEND: 'corporate action-related coverage; verify dates and terms in the source.',
+      LITIGATION: 'legal or investigation-related coverage; refer to the original source for status.',
+      MANAGEMENT: 'management-related coverage; verify the reported change in the original source.'
+    };
+    const context = eventContext[article.event];
+    return context ? `${subjects}: ${context}` : null;
   }
 
   async loadResource(resource: BrokerResource): Promise<void> {

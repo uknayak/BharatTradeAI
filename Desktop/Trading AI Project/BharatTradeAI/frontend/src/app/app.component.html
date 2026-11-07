@@ -111,6 +111,11 @@
             <div class="panel news-loading">Searching recent business coverage…</div>
           } @else if (newsResponse(); as news) {
             @if (news.cache_status === 'stale') { <div class="notice notice-warning" role="status">{{ news.cache_warning }}</div> }
+            <div class="market-freshness-line">
+              <span>{{ news.source }} · {{ news.cache_status ?? 'fresh' }} cache</span>
+              <span>Last retrieved {{ news.retrieved_at ? (news.retrieved_at | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'time unavailable' }} IST</span>
+              @if (news.cache_age_seconds !== undefined) { <span>Cache age {{ news.cache_age_seconds }} sec</span> }
+            </div>
             <section class="news-summary panel">
               <div class="summary-lead"><div><p class="eyebrow">HEADLINE SENTIMENT · {{ news.count }} ARTICLES</p><h2>{{ news.headline_bias }} <span>coverage</span></h2></div><span class="summary-query">{{ news.query }}</span></div>
               <div class="sentiment-counts">
@@ -118,20 +123,41 @@
                 <div class="sentiment-count negative-count"><span>Negative</span><strong>{{ news.sentiment_counts.negative }}</strong></div>
                 <div class="sentiment-count neutral-count"><span>Neutral</span><strong>{{ news.sentiment_counts.neutral }}</strong></div>
               </div>
-              <p class="sentiment-disclaimer">{{ news.notice }} Individual publisher headlines may be incomplete or conflicting.</p>
+              <p class="sentiment-disclaimer">{{ news.notice }} This headline-level signal is not FinBERT; FinBERT sentiment is shown separately in AI Stock Picks when available. Individual publisher headlines may be incomplete or conflicting.</p>
             </section>
 
             <section class="news-results">
               <div class="results-heading"><div><p class="eyebrow">RECENT COVERAGE</p><h2>Business headlines</h2></div><a [href]="news.source_url" target="_blank" rel="noopener noreferrer">About {{ news.source }} ↗</a></div>
-              @if (news.articles.length) {
+              <div class="market-filter-row" aria-label="Filter news articles">
+                <label>Company
+                  <select [value]="newsCompanyFilter()" (change)="setNewsCompany($any($event.target).value)">
+                    <option value="ALL">All companies / topics</option>
+                    @for (company of newsCompanies; track company.symbol) { <option [value]="company.symbol">{{ company.name }} ({{ company.symbol }})</option> }
+                  </select>
+                </label>
+                <label>Source
+                  <select [value]="newsSourceFilter()" (change)="setNewsSource($any($event.target).value)">
+                    <option value="ALL">All sources</option>
+                    @for (source of newsSources; track source) { <option [value]="source">{{ source }}</option> }
+                  </select>
+                </label>
+                <label>Published
+                  <select [value]="newsRecencyFilter()" (change)="setNewsRecency($any($event.target).value)">
+                    <option value="ALL">Any available date</option><option value="24H">Past 24 hours</option><option value="7D">Past 7 days</option>
+                  </select>
+                </label>
+                <span>{{ filteredNewsArticles.length }} matching</span>
+              </div>
+              @if (filteredNewsArticles.length) {
                 <div class="article-list">
-                  @for (article of news.articles; track article.id) {
+                  @for (article of filteredNewsArticles; track article.id) {
                     <article class="article-row">
                       <div class="article-main">
-                        <div class="article-meta"><span>{{ article.source || 'News source' }}</span><span class="meta-divider">·</span><time>{{ article.published_at ? (article.published_at | date:'dd MMM, HH:mm') : 'Time unavailable' }}</time></div>
+                        <div class="article-meta"><span>{{ article.source || 'News source' }}</span><span class="meta-divider">·</span><span>Published {{ article.published_at ? (article.published_at | date:'dd MMM, HH:mm':'Asia/Kolkata') + ' IST' : 'time unavailable' }}</span><span class="meta-divider">·</span><span>Retrieved {{ article.retrieved_at ? (article.retrieved_at | date:'dd MMM, HH:mm':'Asia/Kolkata') + ' IST' : 'time unavailable' }}</span></div>
                         <a class="article-title" [href]="article.url" target="_blank" rel="noopener noreferrer">{{ article.title }} <span>↗</span></a>
+                        @if (newsWhyItMatters(article); as why) { <p class="news-why-matters"><strong>Why it matters</strong> · {{ why }}</p> }
                         <div class="article-tags">
-                          <span class="sentiment-tag" [class.positive-tag]="article.sentiment.label === 'POSITIVE'" [class.negative-tag]="article.sentiment.label === 'NEGATIVE'">{{ article.sentiment.label }} HEADLINE</span>
+                          <span class="sentiment-tag" [class.positive-tag]="article.sentiment.label === 'POSITIVE'" [class.negative-tag]="article.sentiment.label === 'NEGATIVE'">{{ article.sentiment.label }} {{ article.sentiment_source === 'provider' ? 'PROVIDER HEADLINE' : (article.sentiment_source === 'provider_tone' ? 'PROVIDER TONE' : 'KEYWORD HEURISTIC') }}</span>
                           @if (article.event !== 'GENERAL') { <span class="event-tag">{{ article.event.replaceAll('_', ' ') }}</span> }
                           @for (listing of article.listings; track listing.symbol) { <span class="listing-tag">{{ listing.exchanges.join(' / ') }} · {{ listing.symbol }} · {{ listing.name }}{{ listing.match_type === 'headline' ? ' · TEXT MATCH' : '' }}</span> }
                           @for (symbol of article.unmatched_symbols; track symbol) { <span class="listing-tag">TICKER {{ symbol }}</span> }
@@ -158,7 +184,7 @@
             <button type="button" role="tab" aria-selected="true" class="selected">Live</button>
           </div>
           <div class="stock-toolbar panel">
-            <div><p class="eyebrow">YAHOO FINANCE · PUBLIC INTRADAY SNAPSHOT</p><h2>Live market</h2><p>NIFTY 50, Bank Nifty and a starter watchlist of NSE large-cap stocks. No key or broker login required.</p></div>
+            <div><p class="eyebrow">YAHOO FINANCE · PUBLIC QUOTE SNAPSHOT</p><h2>Market data</h2><p>NIFTY 50, Bank Nifty and a starter watchlist of NSE large-cap stocks. Unofficial snapshots may be delayed; they are not exchange-guaranteed real-time data.</p></div>
             <button type="button" class="secondary-button" [disabled]="stockLoading()" (click)="loadStockQuotes()"><span [class.spinning]="stockLoading()">↻</span> Refresh quotes</button>
           </div>
 
@@ -173,13 +199,19 @@
           @if (stockLoading() && !stockQuotes()) {
             <div class="panel empty-state">Loading public intraday quote snapshots…</div>
           } @else if (stockQuotes(); as market) {
+            <div class="market-freshness-line">
+              <span>Yahoo Finance snapshot</span>
+              <span>Last successful refresh {{ (market.lastSuccessfulRefresh ?? market.refreshedAt) | date:'dd MMM, HH:mm:ss':'Asia/Kolkata' }} IST</span>
+              <span>Market {{ isIndianMarketOpen ? 'open' : 'closed' }} · exchange hours 09:15–15:30 IST, weekdays</span>
+              <span [class.freshness-warning]="market.cacheStatus === 'stale'">{{ market.cacheStatus ?? 'fresh' }} cache</span>
+            </div>
             @if (market.warnings.length) {
               <div class="notice notice-warning" role="status">Some symbols could not be updated: {{ market.warnings.join(' · ') }}</div>
             }
             <section class="stock-index-grid" aria-label="Major Indian indices">
               @for (quote of stockIndices; track quote.symbol) {
                 <article class="stock-index-card panel">
-                  <div class="stock-quote-heading"><div><p class="eyebrow">NSE INDEX</p><h2>{{ quote.name }}</h2></div><span class="stock-live-pill">SNAPSHOT</span></div>
+                  <div class="stock-quote-heading"><div><p class="eyebrow">NSE INDEX</p><h2>{{ quote.name }}</h2></div><span class="stock-live-pill">{{ quote.timestampStatus ?? 'snapshot' }}</span></div>
                   @if (quote.lastPrice === null) {
                     <div class="stock-quote-missing">Quote unavailable</div>
                   } @else {
@@ -190,15 +222,28 @@
                     </div>
                     <div class="stock-index-range"><span>Open <strong>{{ quote.open === null ? '—' : (quote.open | currency:'INR':'symbol':'1.2-2') }}</strong></span><span>High <strong>{{ quote.high === null ? '—' : (quote.high | currency:'INR':'symbol':'1.2-2') }}</strong></span><span>Low <strong>{{ quote.low === null ? '—' : (quote.low | currency:'INR':'symbol':'1.2-2') }}</strong></span></div>
                   }
-                  <div class="stock-quote-time">As of {{ quote.timestamp ? (quote.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'time unavailable' }} IST</div>
+                  <div class="stock-quote-time">
+                    @if (quote.timestampStatus === 'future_timestamp') { Provider time unverified: {{ quote.providerTimestamp ? (quote.providerTimestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'unavailable' }} IST }
+                    @else { Provider time {{ quote.timestamp ? (quote.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'unavailable' }} IST · {{ quoteAgeSeconds(quote) === null ? 'age unavailable' : (quoteAgeSeconds(quote) + ' sec old') }}
+                    } · refreshed {{ market.refreshedAt | date:'HH:mm:ss':'Asia/Kolkata' }} IST
+                  </div>
+                  @if (quote.timestampWarning) { <div class="stock-quote-warning">{{ quote.timestampWarning }}</div> }
                 </article>
               }
             </section>
 
             <section class="stock-list-panel panel">
-              <div class="stock-list-heading"><div><p class="eyebrow">NSE EQUITIES · {{ stockRows.length }} SYMBOLS</p><h2>Large-cap watchlist</h2></div><span class="stock-refresh-note">Auto-refresh · 60 sec</span></div>
-              <div class="table-scroll stock-table-scroll"><table class="stock-table"><thead><tr><th>Company</th><th>Last price</th><th>Change</th><th>Open</th><th>Day high</th><th>Day low</th><th>Prev. close</th><th>Volume</th><th>Quote time</th></tr></thead><tbody>
-                @for (quote of stockRows; track quote.symbol) {
+              <div class="stock-list-heading"><div><p class="eyebrow">NSE EQUITIES · {{ filteredStockRows.length }} OF {{ stockRows.length }} SYMBOLS</p><h2>Large-cap watchlist</h2></div><span class="stock-refresh-note">Auto-refresh · 60 sec</span></div>
+              <div class="market-filter-row">
+                <label>Find symbol/company <input type="search" [value]="stockSearch()" (input)="updateStockSearch($any($event.target).value)" placeholder="e.g. HDFCBANK"></label>
+                <label>Chart symbol
+                  <select [value]="selectedStockSymbol()" (change)="setSelectedStockSymbol($any($event.target).value)">
+                    @for (quote of filteredStockRows; track quote.symbol) { <option [value]="quote.symbol">{{ quote.symbol }} · {{ quote.name }}</option> }
+                  </select>
+                </label>
+              </div>
+              <div class="table-scroll stock-table-scroll"><table class="stock-table"><thead><tr><th>Company</th><th>Last price</th><th>Change</th><th>Open</th><th>Day high</th><th>Day low</th><th>Prev. close</th><th>Volume</th><th>Provider time / status</th></tr></thead><tbody>
+                @for (quote of filteredStockRows; track quote.symbol) {
                   <tr>
                     <td><strong>{{ quote.symbol }}</strong><small>{{ quote.name }} · {{ quote.exchange }}</small></td>
                     <td class="stock-price-cell">{{ quote.lastPrice === null ? '—' : (quote.lastPrice | currency:'INR':'symbol':'1.2-2') }}</td>
@@ -211,10 +256,28 @@
                     <td>{{ quote.low === null ? '—' : (quote.low | currency:'INR':'symbol':'1.2-2') }}</td>
                     <td>{{ quote.previousClose === null ? '—' : (quote.previousClose | currency:'INR':'symbol':'1.2-2') }}</td>
                     <td>{{ quote.volume === null ? '—' : (quote.volume | number) }}</td>
-                    <td>{{ quote.timestamp ? (quote.timestamp | date:'HH:mm:ss':'Asia/Kolkata') : '—' }}</td>
+                    <td>{{ quote.timestamp ? (quote.timestamp | date:'HH:mm:ss':'Asia/Kolkata') : (quote.providerTimestamp ? (quote.providerTimestamp | date:'HH:mm:ss':'Asia/Kolkata') : '—') }}<small>{{ quote.timestampStatus ?? 'unknown' }}{{ quoteAgeSeconds(quote) === null ? '' : ' · ' + quoteAgeSeconds(quote) + 's' }}</small></td>
                   </tr>
                 }
               </tbody></table></div>
+            </section>
+            <section class="panel stock-chart-panel">
+              <div class="stock-list-heading"><div><p class="eyebrow">{{ selectedStockQuote?.symbol ?? 'SELECT A SYMBOL' }} · HISTORICAL PRICE</p><h2>{{ selectedStockQuote?.name ?? 'Price chart' }}</h2></div>
+                <div class="resource-tabs compact-tabs" role="tablist" aria-label="Chart timeframe">
+                  <button type="button" role="tab" [attr.aria-selected]="stockChartView() === 'intraday'" [class.selected]="stockChartView() === 'intraday'" (click)="setStockChartView('intraday')">Intraday · 5m</button>
+                  <button type="button" role="tab" [attr.aria-selected]="stockChartView() === 'daily'" [class.selected]="stockChartView() === 'daily'" (click)="setStockChartView('daily')">Daily · 5y</button>
+                </div>
+              </div>
+              <p class="stock-chart-caption">{{ stockChartView() === 'intraday' ? 'Yahoo Finance intraday OHLCV bars · 5-minute interval · 5-day window' : 'Stored daily OHLCV history · completed candles only' }} · freshness {{ stockChartFreshness }} · Last bar {{ stockChartLastTime ? (stockChartLastTime | date:'dd MMM, HH:mm':'Asia/Kolkata') + ' IST' : 'unavailable' }}</p>
+              @if (stockChartError()) { <div class="notice notice-warning" role="status">{{ stockChartError() }}</div> }
+              @if (stockChartLoading() && !stockChartCandles.length) { <div class="empty-state">Loading chart data…</div> }
+              @else if (stockChartCandles.length > 1) {
+                <svg class="stock-price-chart" viewBox="0 0 800 200" role="img" [attr.aria-label]="selectedStockQuote?.symbol + ' close price chart'">
+                  <line x1="8" y1="100" x2="792" y2="100"></line>
+                  <polyline [attr.points]="stockChartPolyline"></polyline>
+                </svg>
+                <div class="stock-chart-range"><span>{{ stockChartCandles[0].timestamp | date:'dd MMM, HH:mm':'Asia/Kolkata' }}</span><strong>Close: {{ stockChartCandles[stockChartCandles.length - 1].close | currency:'INR':'symbol':'1.2-2' }}</strong><span>{{ stockChartCandles[stockChartCandles.length - 1].timestamp | date:'dd MMM, HH:mm':'Asia/Kolkata' }}</span></div>
+              } @else { <div class="empty-state">No chart bars were returned for this symbol and timeframe.</div> }
             </section>
             <footer class="stock-attribution">
               Public quote snapshots provided by <a href="https://finance.yahoo.com/" target="_blank" rel="noopener noreferrer">Yahoo Finance ↗</a> using its public intraday chart endpoint. This is an unofficial integration that may change or be rate-limited.
@@ -229,7 +292,7 @@
         <section class="ai-picks-workspace">
           <div class="ai-picks-warning" role="note">
             <span class="ai-picks-warning-icon" aria-hidden="true">i</span>
-            <div><strong>Live market data · validated prediction only</strong><p>Stock quotes refresh from Yahoo Finance every 60 seconds; company news and FinBERT sentiment are fetched from the configured news provider on request. Direction probabilities appear only for a trained, calibrated model with fresh history and out-of-sample evaluation. Without one, this dashboard shows the live quote and model status, never a placeholder probability. Data may be delayed; not investment advice.</p></div>
+            <div><strong>Market quote snapshots · validated prediction only</strong><p>Stock quotes refresh from Yahoo Finance every 60 seconds; company news and FinBERT sentiment are fetched from the configured news provider on request. Direction probabilities appear only for a trained, calibrated model with fresh history and out-of-sample evaluation. Without one, this dashboard shows the latest available snapshot and model status, never a placeholder probability. Data may be delayed; not investment advice.</p></div>
           </div>
 
           <section class="ai-opportunities panel" aria-label="Validated high-confidence opportunities">
@@ -240,6 +303,12 @@
             @if (aiOpportunitiesError()) { <div class="notice notice-error" role="alert">{{ aiOpportunitiesError() }}</div> }
             @if (aiOpportunitiesLoading() && !aiStockOpportunities()) { <div class="empty-state">Checking only fresh quotes and validated predictions…</div> }
             @if (aiStockOpportunities(); as screening) {
+              <div class="market-freshness-line">
+                <span>Screened {{ screening.evaluated_count }} symbols · {{ screening.excluded_count }} excluded</span>
+                <span>Last screening {{ screening.generated_at | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata' }} IST</span>
+                <span>Strict threshold {{ screening.threshold_comparison }} {{ screening.threshold * 100 | number:'1.0-0' }}%</span>
+                <span>Daily-bar inputs are separate from intraday quotes</span>
+              </div>
               @if (screening.opportunities.length) {
                 <div class="ai-opportunity-list">
                   @for (opportunity of screening.opportunities; track opportunity.symbol) {
@@ -249,10 +318,11 @@
                         <div class="ai-opportunity-probability">{{ opportunity.upward_probability * 100 | number:'1.1-1' }}%<small>calibrated upward</small></div>
                       </div>
                       <div class="ai-opportunity-facts">
-                        <span>{{ opportunity.quote_source }} live price <strong>{{ opportunity.current_price | currency:'INR':'symbol':'1.2-2' }}</strong></span>
+                        <span>{{ opportunity.quote_source }} snapshot price <strong>{{ opportunity.current_price | currency:'INR':'symbol':'1.2-2' }}</strong></span>
                         <span>Quote time <strong>{{ opportunity.quote_timestamp | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata' }} IST</strong></span>
                         <span>Daily change <strong [class.stock-up]="opportunity.daily_change_pct >= 0" [class.stock-down]="opportunity.daily_change_pct < 0">{{ opportunity.daily_change_pct > 0 ? '+' : '' }}{{ opportunity.daily_change_pct | number:'1.2-2' }}%</strong></span>
                         <span>Direction <strong>{{ opportunity.predicted_direction }}</strong></span>
+                        <span>Model validation <strong>Chronological out-of-sample evaluated · calibrated</strong></span>
                         <span>Risk <strong>{{ opportunity.risk_classification.level }} · {{ opportunity.risk_classification.summary }}</strong></span>
                         <span>FinBERT news <strong>{{ opportunity.news_sentiment.label }} · {{ opportunity.news_sentiment.analyzed_article_count }}/{{ opportunity.news_sentiment.article_count }} analyzed</strong></span>
                         <span>Expected price range <strong>{{ opportunity.expected_price_range ? (opportunity.expected_price_range.low | currency:'INR':'symbol':'1.2-2') + ' – ' + (opportunity.expected_price_range.high | currency:'INR':'symbol':'1.2-2') : 'Not supported by the direction-only model' }}</strong></span>
@@ -345,8 +415,9 @@
                   <span class="ai-pick-card-top"><span class="ai-pick-exchange">{{ pick.exchange }} · {{ stockQuotes()?.provider ?? 'MARKET FEED' }}</span><span class="ai-pick-sector">{{ pick.sector ?? 'Sector not configured' }}</span></span>
                   <span class="ai-pick-company">{{ pick.companyName }}</span>
                   <span class="ai-pick-symbol">{{ pick.exchange }}: {{ pick.symbol }}</span>
-                  <span class="ai-pick-prices"><strong>{{ quote?.lastPrice === null || quote?.lastPrice === undefined ? 'Quote unavailable' : (quote?.lastPrice | currency:'INR':'symbol':'1.2-2') }}</strong><span [class.stock-up]="(quote?.changePct ?? 0) >= 0" [class.stock-down]="(quote?.changePct ?? 0) < 0">{{ quote?.changePct === null || quote?.changePct === undefined ? '—' : (quote!.changePct! > 0 ? '+' : '') + (quote!.changePct! | number:'1.2-2') + '%' }}</span></span>
-                  <span class="ai-pick-live-time">Quote time · {{ quote?.timestamp ? (quote?.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'unavailable' }}</span>
+                  <span class="ai-pick-prices"><strong>{{ quote?.lastPrice === null || quote?.lastPrice === undefined ? 'Quote unavailable' : (quote?.lastPrice | currency:'INR':'symbol':'1.2-2') }}</strong><span [class.stock-up]="(quote?.changePct ?? 0) >= 0" [class.stock-down]="(quote?.changePct ?? 0) < 0"><small>TODAY</small> {{ quote?.changePct === null || quote?.changePct === undefined ? '—' : (quote!.changePct! > 0 ? '+' : '') + (quote!.changePct! | number:'1.2-2') + '%' }}</span></span>
+                  <span class="ai-pick-live-time">Quote time · {{ quote?.timestamp ? (quote?.timestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') + ' IST' : (quote?.timestampStatus === 'future_timestamp' && quote?.providerTimestamp ? 'provider time unverified: ' + (quote?.providerTimestamp | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'unavailable') }}{{ quote?.timestampStatus === 'clock_skew' ? ' · provider clock adjusted' : '' }}</span>
+                  @if (quote?.timestampStatus === 'future_timestamp') { <span class="ai-pick-live-warning">Yahoo timestamp is ahead of the server; verify this snapshot before trading.</span> }
                   <span class="ai-pick-metrics">
                     <span><small>Validated model</small><strong class="ai-pick-direction" [class.direction-up]="prediction?.direction === 'UP'" [class.direction-down]="prediction?.direction === 'DOWN'">{{ prediction?.status === 'ready' ? prediction?.direction : (prediction?.validation_status ?? 'loading') }}</strong></span>
                     <span><small>Upward probability</small><strong>{{ prediction?.status === 'ready' && prediction?.upward_probability !== undefined ? (prediction!.upward_probability! * 100 | number:'1.1-1') + '%' : 'Not validated' }}</strong></span>
@@ -498,6 +569,12 @@
           @if (ipoLoading() && !ipoList()) { <div class="panel empty-state">Loading IPO listings, deals and scoreboard…</div> }
 
           @if (ipoList(); as listingData) {
+            <div class="market-freshness-line">
+              <span>{{ listingData.dataFreshness?.provider ?? 'Xflot' }} · {{ listingData.dataFreshness?.status ?? 'freshness unavailable' }}</span>
+              <span>Last successful refresh {{ listingData.dataFreshness?.lastSuccessfulFetch ? (listingData.dataFreshness?.lastSuccessfulFetch | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata') + ' IST' : 'time unavailable' }}</span>
+              @if (listingData.dataFreshness?.providerUpdatedAt) { <span>Provider updated {{ listingData.dataFreshness?.providerUpdatedAt | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST</span> }
+              @if (listingData.dataFreshness?.warning) { <span class="freshness-warning">{{ listingData.dataFreshness?.warning }}</span> }
+            </div>
             <section class="ipo-status-grid" aria-label="IPO status counts">
               <article class="ipo-stat"><span>UPCOMING</span><strong>{{ ipoStatusCounts.UPCOMING }}</strong><small>Not yet open</small></article>
               <article class="ipo-stat ipo-stat-open"><span>OPEN</span><strong>{{ ipoStatusCounts.OPEN }}</strong><small>Applications ongoing</small></article>
@@ -531,7 +608,7 @@
                       <span class="ipo-name-cell"><strong>{{ ipo.name }}</strong><small>{{ ipo.symbol ?? ipo.exchange ?? 'India' }} · {{ ipo.board }}{{ ipo.sector ? ' · ' + ipo.sector : '' }}</small></span>
                       <span class="ipo-status" [class]="'ipo-status status-' + ipo.status.toLowerCase()">{{ ipo.status }}</span>
                       <span><small>PRICE BAND</small><strong>{{ ipo.priceMin !== null && ipo.priceMax !== null ? (ipo.priceMin | currency:'INR':'symbol':'1.0-2') + ' – ' + (ipo.priceMax | currency:'INR':'symbol':'1.0-2') : '—' }}</strong></span>
-                      <span><small>GMP · SUBSCRIPTION</small><strong>{{ ipo.lastGmp === null ? '—' : (ipo.lastGmp | currency:'INR':'symbol':'1.0-2') }} · {{ ipo.lastSubX === null ? '—' : (ipo.lastSubX | number:'1.0-2') + '×' }}</strong></span>
+                      <span><small>GMP (UNOFFICIAL) · SUBSCRIPTION</small><strong>{{ ipo.lastGmp === null ? '—' : (ipo.lastGmp | currency:'INR':'symbol':'1.0-2') }}{{ ipo.gmpDisputed ? ' · disputed' : '' }} · {{ ipo.lastSubX === null ? '—' : (ipo.lastSubX | number:'1.0-2') + '×' }}</strong></span>
                       <span><small>OPEN · CLOSE</small><strong>{{ formatMarketDate(ipo.openDate) }} · {{ formatMarketDate(ipo.closeDate) }}</strong></span>
                     </button>
                   }
@@ -563,6 +640,9 @@
                     <div><span>Listing gain</span><strong>{{ ipo.listingGainPct === null || ipo.listingGainPct === undefined ? '—' : (ipo.listingGainPct | number:'1.0-2') + '%' }}</strong></div>
                     <div><span>Last updated</span><strong>{{ formatMarketDate(ipo.updatedAt, true) }}</strong></div>
                   </div>
+                  @if (ipoDetailResponse()?.dataFreshness; as freshness) {
+                    <p class="ipo-freshness-note">{{ freshness.provider }} detail data · {{ freshness.status }} · fetched {{ formatMarketDate(freshness.lastSuccessfulFetch, true) }} IST</p>
+                  }
 
                   <div class="ipo-market-signals">
                     <div class="ipo-gmp-box">
@@ -596,7 +676,7 @@
 
             <section class="ipo-bottom-grid">
               <article class="panel ipo-data-panel">
-                <div class="ipo-section-heading"><div><p class="eyebrow">EXCHANGE DISCLOSURES</p><h2>Bulk &amp; block deals</h2></div><span class="ipo-count">{{ ipoDeals()?.deals?.length ?? 0 }} records</span></div>
+                <div class="ipo-section-heading"><div><p class="eyebrow">EXCHANGE DISCLOSURES</p><h2>Bulk &amp; block deals</h2></div><span class="ipo-count">{{ ipoDeals()?.deals?.length ?? 0 }} records · fetched {{ formatMarketDate(ipoDeals()?.dataFreshness?.lastSuccessfulFetch, true) }}</span></div>
                 @if (ipoDealsError()) { <div class="ipo-inline-error" role="alert">{{ ipoDealsError() }}</div> }
                 @else if (ipoDeals()?.deals?.length) {
                   <div class="table-scroll"><table><thead><tr><th>Date</th><th>Symbol / client</th><th>Type</th><th>Qty</th><th>Price</th><th>Value (Cr)</th><th>Exchange</th></tr></thead><tbody>
@@ -606,7 +686,7 @@
               </article>
 
               <article class="panel ipo-data-panel">
-                <div class="ipo-section-heading"><div><p class="eyebrow">GMP ACCURACY TRACKER</p><h2>Listing scoreboard</h2></div></div>
+                <div class="ipo-section-heading"><div><p class="eyebrow">GMP ACCURACY TRACKER</p><h2>Listing scoreboard</h2></div><span class="ipo-count">{{ ipoScoreboard()?.dataFreshness?.provider ?? 'Xflot' }} · fetched {{ formatMarketDate(ipoScoreboard()?.dataFreshness?.lastSuccessfulFetch, true) }}</span></div>
                 @if (ipoScoreboardError()) { <div class="ipo-inline-error" role="alert">{{ ipoScoreboardError() }}</div> }
                 @else if (ipoScoreboard(); as scoreboard) {
                   <div class="scoreboard-summary"><div><span>Scored listings</span><strong>{{ scoreboard.summary.n }}</strong></div><div><span>Direction hit rate</span><strong>{{ scoreboard.summary.directionHitPct === null ? '—' : (scoreboard.summary.directionHitPct | number:'1.0-1') + '%' }}</strong></div><div><span>Avg. absolute error</span><strong>{{ scoreboard.summary.avgAbsErrorPp === null ? '—' : (scoreboard.summary.avgAbsErrorPp | number:'1.0-1') + ' pp' }}</strong></div></div>
