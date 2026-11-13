@@ -1,7 +1,9 @@
 import requests
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.data.news import fetch_market_news
+from app.services.ai_picks.news import archive_news_intelligence_articles
 from config.settings import settings
 
 router = APIRouter(prefix="/api/v1", tags=["news"])
@@ -13,11 +15,13 @@ def search_news(
     limit: int = Query(default=25, ge=1, le=50),
 ) -> dict:
     try:
-        return fetch_market_news(
+        result = fetch_market_news(
             query=query,
             limit=limit,
             newsdata_api_key=settings.news_data_api_key,
         )
+        result.update(archive_news_intelligence_articles(result))
+        return result
     except requests.HTTPError as exc:
         provider = "NewsData.io" if settings.news_data_api_key else "GDELT"
         if exc.response is not None and exc.response.status_code == 429:
@@ -39,3 +43,8 @@ def search_news(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="News was retrieved, but the point-in-time news archive could not be updated.",
+        ) from exc

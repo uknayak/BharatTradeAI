@@ -1,6 +1,8 @@
 """Validated probability screening and explainable stock-pick ranking."""
 
 import math
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,10 +17,14 @@ from app.services.ai_picks.sentiment_analysis import get_ai_pick_sentiment
 from app.services.market.live_quotes import WATCHLIST, fetch_live_quotes
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
-MIN_UPWARD_PROBABILITY = 0.8
+SUPPORTED_THRESHOLD_PERCENTS = (65, 70, 80)
 MAX_QUOTE_AGE = timedelta(minutes=15)
 MAX_DAILY_BAR_AGE = timedelta(days=4)
 NO_OPPORTUNITIES_MESSAGE = "No high-confidence opportunities found for the next trading day."
+_EXPLANATION_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_EXPLANATION_PENDING: set[tuple[str, str, str, str]] = set()
+_EXPLANATION_LOCK = threading.Lock()
+EXPLANATION_FAILURE_RETRY_SECONDS = 300
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -99,8 +105,17 @@ def _technical_signals(indicators: dict[str, Any], pattern: dict[str, Any]) -> t
     return signals, summary
 
 
-def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, Any]:
-    """Select only fresh, validated model outputs above the strict 80% threshold."""
+def build_ai_stock_opportunities(
+    *,
+    now: datetime | None = None,
+    include_explanations: bool = True,
+    threshold_percent: int = 80,
+) -> dict[str, Any]:
+    """Select fresh, validated model outputs strictly above a supported threshold."""
+    if threshold_percent not in SUPPORTED_THRESHOLD_PERCENTS:
+        raise ValueError(f"Threshold must be one of {SUPPORTED_THRESHOLD_PERCENTS}.")
+
+    minimum_probability = threshold_percent / 100
     as_of = now or datetime.now(timezone.utc)
     if as_of.tzinfo is None:
         raise ValueError("The opportunity-selection time must include a timezone.")
@@ -139,8 +154,11 @@ def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, An
             exclusions.append({"symbol": symbol, "reason": "model_not_validated"})
             continue
         probability = prediction.get("upward_probability")
-        if not isinstance(probability, (int, float)) or not MIN_UPWARD_PROBABILITY < probability <= 1:
-            exclusions.append({"symbol": symbol, "reason": "below_strict_80_percent_threshold"})
+        if not isinstance(probability, (int, float)) or not minimum_probability < probability <= 1:
+            exclusions.append({
+                "symbol": symbol,
+                "reason": f"below_strict_{threshold_percent}_percent_threshold",
+            })
             continue
         last_market_time = _parse_timestamp(prediction.get("last_market_time"))
         if (
@@ -239,6 +257,8 @@ def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, An
                 "symbol": symbol,
                 "current_price": quote["lastPrice"],
                 "daily_change_pct": quote["changePct"],
+                "quote_source": quotes_response.get("provider", "Yahoo Finance"),
+                "quote_timestamp": quote["timestamp"],
                 "upward_probability": probability,
                 "predicted_direction": prediction["direction"],
                 "expected_price_range": None,
@@ -266,17 +286,26 @@ def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, An
         )
 
     eligible.sort(key=lambda stock: stock["upward_probability"], reverse=True)
-    try:
-        explanations = explain_stock_analyses(
-            [
-                (stock["_explanation_payload"], stock["_signals"])
-                for stock in eligible
-            ]
-        )
-    except OllamaExplanationUnavailable:
-        explanations = [unavailable_explanation() for _ in eligible]
-    for stock, explanation in zip(eligible, explanations):
-        stock["gemma_explanation"] = explanation
+    if include_explanations:
+        try:
+            explanations = explain_stock_analyses(
+                [
+                    (stock["_explanation_payload"], stock["_signals"])
+                    for stock in eligible
+                ]
+            )
+        except OllamaExplanationUnavailable:
+            explanations = [unavailable_explanation() for _ in eligible]
+        for stock, explanation in zip(eligible, explanations):
+            stock["gemma_explanation"] = explanation
+    else:
+        for stock in eligible:
+            stock["gemma_explanation"] = {
+                "status": "pending",
+                "provider": "Ollama",
+                "model": "Gemma 3",
+                "summary": "Gemma explanation is queued; validated prediction results are available independently.",
+            }
     for stock in eligible:
         stock.pop("_signals")
         stock.pop("_explanation_payload")
@@ -284,7 +313,7 @@ def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, An
     return {
         "status": "ready" if eligible else "no_opportunities",
         "provider": "Yahoo Finance + validated local ML + stored FinBERT + Ollama",
-        "threshold": MIN_UPWARD_PROBABILITY,
+        "threshold": minimum_probability,
         "threshold_comparison": "strictly greater than",
         "generated_at": as_of.isoformat(),
         "evaluated_count": len(predictions),
@@ -292,10 +321,115 @@ def build_ai_stock_opportunities(*, now: datetime | None = None) -> dict[str, An
         "exclusion_reasons": exclusions,
         "model_statuses": predictions,
         "opportunities": eligible,
-        "empty_message": None if eligible else NO_OPPORTUNITIES_MESSAGE,
+        "empty_message": (
+            None
+            if eligible
+            else NO_OPPORTUNITIES_MESSAGE
+            if threshold_percent == 80
+            else f"No validated opportunities found above {threshold_percent}% for the next trading day."
+        ),
         "notice": (
             "Probabilities come only from the calibrated, out-of-sample validated ML service. "
             "Gemma 3 selects from supplied signal IDs; prices, probabilities, indicators, and summaries "
             "are rendered from trusted application data. Yahoo quotes may be delayed."
         ),
     }
+
+
+def _explanation_key(opportunity: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        opportunity["symbol"],
+        opportunity["model_version"],
+        opportunity["technical_analysis"]["last_market_time"],
+        opportunity["news_sentiment"]["label"],
+    )
+
+
+def queue_opportunity_explanations(
+    opportunities: list[dict[str, Any]],
+) -> list[tuple[tuple[str, str, str, str], dict[str, Any], list[dict[str, str]]]]:
+    """Reserve uncached explanations and return the work for an API background task."""
+    jobs = []
+    with _EXPLANATION_LOCK:
+        for opportunity in opportunities:
+            key = _explanation_key(opportunity)
+            cached = _EXPLANATION_CACHE.get(key)
+            if cached is not None and (
+                cached["status"] != "unavailable"
+                or time.monotonic() - cached["_cached_at"] < EXPLANATION_FAILURE_RETRY_SECONDS
+            ):
+                opportunity["gemma_explanation"] = {
+                    field: value for field, value in cached.items() if field != "_cached_at"
+                }
+                continue
+            if cached is not None:
+                del _EXPLANATION_CACHE[key]
+            opportunity["gemma_explanation"] = {
+                "status": "pending",
+                "provider": "Ollama",
+                "model": "Gemma 3",
+                "summary": "Gemma explanation is being prepared; the validated ML output is not blocked.",
+            }
+            if key in _EXPLANATION_PENDING:
+                continue
+            _EXPLANATION_PENDING.add(key)
+
+            indicators = opportunity["technical_analysis"]["indicators"]
+            pattern = opportunity["technical_analysis"]["historical_pattern"]
+            sentiment = opportunity["news_sentiment"]
+            signals, _ = _technical_signals(indicators, pattern)
+            if sentiment["label"] == "POSITIVE":
+                signals.append({
+                    "id": "news_sentiment",
+                    "label": "FinBERT company-news sentiment is positive.",
+                    "polarity": "bullish",
+                })
+            elif sentiment["label"] == "NEGATIVE":
+                signals.append({
+                    "id": "news_sentiment",
+                    "label": "FinBERT company-news sentiment is negative.",
+                    "polarity": "bearish",
+                })
+            risk = opportunity["risk_classification"]
+            signals.append({"id": "risk_level", "label": risk["summary"], "polarity": "risk"})
+            payload = {
+                "symbol": opportunity["symbol"],
+                "exchange": opportunity["exchange"],
+                "direction": opportunity["predicted_direction"],
+                "upward_probability": opportunity["upward_probability"],
+                "current_price": opportunity["current_price"],
+                "daily_change_pct": opportunity["daily_change_pct"],
+                "quote_source": opportunity["quote_source"],
+                "quote_timestamp": opportunity["quote_timestamp"],
+                "technical_indicators": indicators,
+                "historical_pattern": pattern,
+                "news_sentiment": sentiment,
+                "risk_level": risk["level"],
+            }
+            jobs.append((key, payload, signals))
+    return jobs
+
+
+def run_opportunity_explanations(
+    jobs: list[tuple[tuple[str, str, str, str], dict[str, Any], list[dict[str, str]]]],
+) -> None:
+    """Generate explanations outside the request path and cache bounded results."""
+    if not jobs:
+        return
+    try:
+        explanations = explain_stock_analyses(
+            [(payload, signals) for _, payload, signals in jobs]
+        )
+    except OllamaExplanationUnavailable:
+        explanations = [unavailable_explanation() for _ in jobs]
+
+    with _EXPLANATION_LOCK:
+        for (key, _, _), explanation in zip(jobs, explanations):
+            _EXPLANATION_CACHE[key] = {
+                **explanation,
+                "_cached_at": time.monotonic(),
+            }
+            _EXPLANATION_PENDING.discard(key)
+        while len(_EXPLANATION_CACHE) > 250:
+            oldest_key = next(iter(_EXPLANATION_CACHE))
+            del _EXPLANATION_CACHE[oldest_key]

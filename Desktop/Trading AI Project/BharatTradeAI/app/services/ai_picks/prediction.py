@@ -16,13 +16,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import SessionLocal
 from app.db.models import MarketInstrument
-from app.ml.ensemble import train_direction_ensemble
+from app.ml.ensemble import compare_news_feature_walk_forward, train_direction_ensemble
 from app.ml.features import build_direction_features, build_direction_training_set
 from app.ml.lstm import build_ohlcv_sequences, predict_lstm_probabilities
 from app.ml.ensemble import _calibrate
 from app.services.ai_picks.news_models import (
     AIStockArticleSentiment,
-    AIStockNews,
+    AIStockNewsSnapshot,
 )
 from app.services.market.live_quotes import WATCHLIST
 from app.services.market.models import Candle, MarketDataSync
@@ -97,6 +97,18 @@ def _market_date(value: datetime) -> str:
 
 def _decision_cutoff(value: datetime) -> datetime:
     return datetime.combine(_as_utc(value).date(), INDIA_CLOSE_UTC, tzinfo=timezone.utc)
+
+
+def _news_was_available_by(
+    article: AIStockNewsSnapshot,
+    sentiment: AIStockArticleSentiment,
+    cutoff: datetime,
+) -> bool:
+    return (
+        _as_utc(article.published_at) < cutoff
+        and _as_utc(article.retrieved_at) < cutoff
+        and _as_utc(sentiment.analyzed_at) < cutoff
+    )
 
 
 def _is_complete_daily_bar(
@@ -191,8 +203,8 @@ def _load_context(db: Any, instrument: dict[str, str], candles: list[Candle]) ->
             }
 
     articles = (
-        db.query(AIStockNews)
-        .filter(AIStockNews.symbol == instrument["symbol"])
+        db.query(AIStockNewsSnapshot)
+        .filter(AIStockNewsSnapshot.symbol == instrument["symbol"])
         .all()
     )
     article_scores = (
@@ -211,9 +223,9 @@ def _load_context(db: Any, instrument: dict[str, str], candles: list[Candle]) ->
         total_weight = 0.0
         for article in articles:
             sentiment = score_by_id.get(article.article_id)
-            published_at = _as_utc(article.published_at)
-            if sentiment is None or published_at >= cutoff:
+            if sentiment is None or not _news_was_available_by(article, sentiment, cutoff):
                 continue
+            published_at = _as_utc(article.published_at)
             age_hours = max(0.0, (cutoff - published_at).total_seconds() / 3600)
             freshness = math.exp(-math.log(2) * age_hours / FRESHNESS_HALF_LIFE_HOURS)
             weight = sentiment.relevance_score * freshness
@@ -233,6 +245,9 @@ def _load_market_data(symbol: str) -> tuple[dict[str, str], list[dict[str, Any]]
     instrument = _instrument(symbol)
     if instrument is None:
         raise ValueError(f"Unsupported NSE equity symbol: {symbol}.")
+    from app.services.ai_picks.news import archive_existing_news
+
+    archive_existing_news()
     db = SessionLocal()
     try:
         rows = (
@@ -320,6 +335,52 @@ def _data_status(candles: list[dict[str, Any]]) -> dict[str, Any]:
         "sample_count": len(candles),
         "latest_market_time": latest.isoformat(),
     }
+
+
+def evaluate_stock_news_feature_impact(symbol: str, *, step: int = 60) -> dict[str, Any]:
+    """Run a paired chronological XGBoost ablation without changing production models."""
+    if not _training_lock.acquire(blocking=False):
+        raise PredictionTrainingInProgress("A stock prediction training job is already running.")
+    try:
+        instrument, candles, context = _load_market_data(symbol)
+        data_status = _data_status(candles)
+        response: dict[str, Any] = {
+            "symbol": instrument["symbol"],
+            "exchange": instrument["exchange"],
+            "provider": "Yahoo Finance",
+            "evaluation": "FinBERT news-feature ablation; production model unchanged",
+            "market_data": data_status,
+            "news_context": "available" if context["news_sentiment"] else "unavailable",
+        }
+        if data_status["status"] != "ready":
+            return {**response, "status": data_status["status"], "message": data_status["message"]}
+
+        dataset = build_direction_training_set(
+            candles,
+            news_sentiment=context["news_sentiment"],
+            sector_returns=context["sector_returns"],
+            market_returns=context["market_returns"],
+        )
+        sample_count = len(dataset["labels"])
+        start_index = int(sample_count * 0.85)
+        comparison = compare_news_feature_walk_forward(
+            dataset["features"],
+            dataset["labels"],
+            start_index=start_index,
+            step=step,
+        )
+        result = {**response, **comparison, "sample_count": sample_count}
+        if comparison["status"] == "ready":
+            first_test_candle = candles[dataset["indices"][start_index]]
+            last_test_candle = candles[dataset["indices"][-1]]
+            result["out_of_sample_window"] = {
+                "input_start": _as_utc(first_test_candle["candle_time"]).isoformat(),
+                "input_end": _as_utc(last_test_candle["candle_time"]).isoformat(),
+                "predicted_sessions": comparison["with_news"]["sample_count"],
+            }
+        return result
+    finally:
+        _training_lock.release()
 
 
 def _artifact_directory(root: Path, symbol: str) -> Path:

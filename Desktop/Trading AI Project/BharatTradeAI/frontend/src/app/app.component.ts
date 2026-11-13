@@ -7,8 +7,10 @@ import {
   AiStockModelTrainingJobResponse,
   AiStockOpportunitiesResponse,
   AiStockPredictionsResponse,
+  AiStockNewsFeatureImpactResponse,
   AiPickFinBertCompany,
   AiPickSentimentResponse,
+  GroundedNewsResponse,
   BrokerResource,
   BrokerResponse,
   HealthResponse,
@@ -73,6 +75,23 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly newsSourceFilter = signal('ALL');
   readonly newsCompanyFilter = signal('ALL');
   readonly newsRecencyFilter = signal<NewsRecency>('ALL');
+  readonly groundedNewsSymbol = signal('RELIANCE');
+  readonly groundedNewsQuestion = signal('');
+  readonly groundedNewsResponse = signal<GroundedNewsResponse | null>(null);
+  readonly groundedNewsLoading = signal(false);
+  readonly groundedNewsError = signal('');
+  readonly ragNewsStocks = [
+    { symbol: 'RELIANCE', name: 'Reliance Industries' },
+    { symbol: 'HDFCBANK', name: 'HDFC Bank' },
+    { symbol: 'TCS', name: 'Tata Consultancy Services' },
+    { symbol: 'INFY', name: 'Infosys' },
+    { symbol: 'ICICIBANK', name: 'ICICI Bank' },
+    { symbol: 'SBIN', name: 'State Bank of India' },
+    { symbol: 'ITC', name: 'ITC' },
+    { symbol: 'LT', name: 'Larsen & Toubro' },
+    { symbol: 'BHARTIARTL', name: 'Bharti Airtel' },
+    { symbol: 'AXISBANK', name: 'Axis Bank' }
+  ];
   readonly ipoLoading = signal(false);
   readonly ipoError = signal('');
   readonly ipoList = signal<IpoListResponse | null>(null);
@@ -101,6 +120,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly stockChartError = signal('');
   private stockChartRequestId = 0;
   private stockRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private gemmaExplanationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   readonly aiPickExchange = signal<AiPickExchange>('ALL');
   readonly aiPickSector = signal('ALL');
   readonly aiPickMinProbability = signal(0);
@@ -117,6 +137,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly aiStockOpportunities = signal<AiStockOpportunitiesResponse | null>(null);
   readonly aiOpportunitiesLoading = signal(false);
   readonly aiOpportunitiesError = signal('');
+  readonly aiOpportunityThresholdPercent = signal<65 | 70 | 80>(80);
   readonly aiModelTraining = signal(false);
   readonly aiModelTrainingNotice = signal('');
   readonly aiPredictionError = signal('');
@@ -125,6 +146,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly aiPickSentimentLoading = signal(false);
   readonly aiPickSentimentAnalyzing = signal(false);
   readonly aiPickSentimentError = signal('');
+  readonly aiPickNewsImpact = signal<AiStockNewsFeatureImpactResponse | null>(null);
+  readonly aiPickNewsImpactLoading = signal(false);
+  readonly aiPickNewsImpactError = signal('');
   readonly aiPickNewsSyncing = signal(false);
   readonly aiPickNewsError = signal('');
   readonly aiPickNewsNotice = signal('');
@@ -144,6 +168,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopStockRefresh();
+    this.stopGemmaExplanationRefresh();
   }
 
   async refreshStatus(): Promise<void> {
@@ -180,6 +205,7 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     } else {
       this.stopStockRefresh();
+      this.stopGemmaExplanationRefresh();
     }
     if (section === 'ai-picks') {
       void this.loadAiStockOpportunities();
@@ -215,7 +241,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   setAiPickMinProbability(value: string): void {
     const probability = Number(value);
-    if ([0, 60, 70, 80].includes(probability)) {
+    if ([0, 60, 65, 70, 80].includes(probability)) {
       this.aiPickMinProbability.set(probability);
       this.refreshSelectedAiPickHistory();
     }
@@ -332,30 +358,69 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async loadAiStockOpportunities(): Promise<void> {
     if (this.aiOpportunitiesLoading()) return;
+    const requestedThreshold = this.aiOpportunityThresholdPercent();
     this.aiOpportunitiesLoading.set(true);
     this.aiOpportunitiesError.set('');
     try {
-      const response = await this.api.getAiStockOpportunities();
-      this.aiStockOpportunities.set(response);
-      this.aiPredictionList.set({
-        status: response.model_statuses.length ? 'ready' : 'no_data',
-        provider: response.provider,
-        updated_at: response.generated_at,
-        predictions: response.model_statuses,
-        notice: response.notice
-      });
-      this.aiStockPredictions.set(
-        Object.fromEntries(response.model_statuses.map(prediction => [prediction.symbol, prediction]))
-      );
+      const response = await this.api.getAiStockOpportunities(requestedThreshold);
+      if (this.aiOpportunityThresholdPercent() === requestedThreshold) {
+        this.aiStockOpportunities.set(response);
+        this.scheduleGemmaExplanationRefresh(response);
+        this.aiPredictionList.set({
+          status: response.model_statuses.length ? 'ready' : 'no_data',
+          provider: response.provider,
+          updated_at: response.generated_at,
+          predictions: response.model_statuses,
+          notice: response.notice
+        });
+        this.aiStockPredictions.set(
+          Object.fromEntries(response.model_statuses.map(prediction => [prediction.symbol, prediction]))
+        );
+      }
     } catch (error: unknown) {
-      this.aiStockOpportunities.set(null);
-      this.aiOpportunitiesError.set(
-        error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
-          ? error.error.detail
-          : 'Validated stock opportunities could not be calculated. Check the market-data and prediction services.'
-      );
+      if (this.aiOpportunityThresholdPercent() === requestedThreshold) {
+        this.aiStockOpportunities.set(null);
+        this.aiOpportunitiesError.set(
+          error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+            ? error.error.detail
+            : 'Validated stock opportunities could not be calculated. Check the market-data and prediction services.'
+        );
+      }
     } finally {
       this.aiOpportunitiesLoading.set(false);
+      if (this.aiOpportunityThresholdPercent() !== requestedThreshold) {
+        void this.loadAiStockOpportunities();
+      }
+    }
+  }
+
+  setAiOpportunityThreshold(value: string): void {
+    const threshold = Number(value);
+    if (threshold === 65 || threshold === 70 || threshold === 80) {
+      this.aiOpportunityThresholdPercent.set(threshold);
+      this.aiStockOpportunities.set(null);
+      void this.loadAiStockOpportunities();
+    }
+  }
+
+  private scheduleGemmaExplanationRefresh(response: AiStockOpportunitiesResponse): void {
+    this.stopGemmaExplanationRefresh();
+    if (
+      this.section() !== 'ai-picks' ||
+      !response.opportunities.some(item => item.gemma_explanation.status === 'pending')
+    ) {
+      return;
+    }
+    this.gemmaExplanationRefreshTimer = setTimeout(() => {
+      this.gemmaExplanationRefreshTimer = null;
+      void this.loadAiStockOpportunities();
+    }, 15_000);
+  }
+
+  private stopGemmaExplanationRefresh(): void {
+    if (this.gemmaExplanationRefreshTimer) {
+      clearTimeout(this.gemmaExplanationRefreshTimer);
+      this.gemmaExplanationRefreshTimer = null;
     }
   }
 
@@ -433,6 +498,29 @@ export class AppComponent implements OnInit, OnDestroy {
 
   aiPickCompanyNews(symbol: string): AiPickFinBertCompany | null {
     return this.aiPickSentiment()?.companies.find(company => company.symbol === symbol) ?? null;
+  }
+
+  aiPickNewsImpactFor(symbol: string): AiStockNewsFeatureImpactResponse | null {
+    const result = this.aiPickNewsImpact();
+    return result?.symbol === symbol ? result : null;
+  }
+
+  async evaluateAiPickNewsImpact(symbol: string): Promise<void> {
+    if (this.aiPickNewsImpactLoading()) return;
+    this.aiPickNewsImpactLoading.set(true);
+    this.aiPickNewsImpactError.set('');
+    this.aiPickNewsImpact.set(null);
+    try {
+      this.aiPickNewsImpact.set(await this.api.getAiStockNewsFeatureImpact(symbol));
+    } catch (error: unknown) {
+      this.aiPickNewsImpactError.set(
+        error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail
+          : 'The news-feature comparison could not be completed. Check the API and stored market data.'
+      );
+    } finally {
+      this.aiPickNewsImpactLoading.set(false);
+    }
   }
 
   async loadAiPickSentiment(): Promise<void> {
@@ -882,8 +970,52 @@ export class AppComponent implements OnInit, OnDestroy {
       } else {
         this.newsError.set('The free news service could not be reached. Check your internet connection and try again.');
       }
+
     } finally {
       this.newsLoading.set(false);
+    }
+  }
+
+  setGroundedNewsSymbol(value: string): void {
+    if (this.ragNewsStocks.some(stock => stock.symbol === value)) {
+      this.groundedNewsSymbol.set(value);
+      this.groundedNewsResponse.set(null);
+    }
+  }
+
+  openGroundedNewsForAiPick(symbol: string): void {
+    if (!this.ragNewsStocks.some(stock => stock.symbol === symbol)) return;
+    this.setGroundedNewsSymbol(symbol);
+    this.updateGroundedNewsQuestion(
+      `Summarize recent news about ${symbol}, including positive and negative developments.`
+    );
+    this.setSection('news');
+  }
+
+  updateGroundedNewsQuestion(value: string): void {
+    this.groundedNewsQuestion.set(value);
+    this.groundedNewsResponse.set(null);
+  }
+
+  async askGroundedNewsQuestion(): Promise<void> {
+    const question = this.groundedNewsQuestion().trim();
+    if (!question || this.groundedNewsLoading()) return;
+    this.groundedNewsLoading.set(true);
+    this.groundedNewsError.set('');
+    this.groundedNewsResponse.set(null);
+    try {
+      this.groundedNewsResponse.set(await this.api.askGroundedNewsQuestion({
+        symbol: this.groundedNewsSymbol(),
+        question
+      }));
+    } catch (error: unknown) {
+      this.groundedNewsError.set(
+        error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail
+          : 'Grounded news analysis could not be completed. Check the API, Ollama, and embedding-model setup.'
+      );
+    } finally {
+      this.groundedNewsLoading.set(false);
     }
   }
 

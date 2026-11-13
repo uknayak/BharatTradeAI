@@ -147,10 +147,17 @@ def test_finbert_article_scores_are_cached_and_aggregated_by_freshness_and_relev
     assert repeated["articleCount"] == result["articleCount"]
     db = sessions()
     try:
-        stored = db.query(AIStockArticleSentiment).filter_by(model_id=model.model_id).count()
+        stored_rows = db.query(AIStockArticleSentiment).filter_by(model_id=model.model_id).all()
     finally:
         db.close()
-    assert stored == 2
+    assert len(stored_rows) == 2
+    stored_newest = next(row for row in stored_rows if row.article_id == "newest")
+    assert stored_newest.freshness_weight == pytest.approx(
+        sentiment_analysis._freshness_weight(
+            cutoff - timedelta(hours=1),
+            stored_newest.analyzed_at.replace(tzinfo=timezone.utc),
+        )
+    )
 
 
 def test_finbert_analysis_returns_no_data_without_loading_model(monkeypatch):

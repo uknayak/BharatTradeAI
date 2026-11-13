@@ -98,6 +98,48 @@
             <div class="search-meta"><span>India · English business coverage</span><span>Search powered by {{ newsResponse()?.source ?? 'configured free provider' }}</span><span>{{ newsResponse()?.source === 'NewsData.io' ? 'Free tier: 12-hour delay' : (newsResponse()?.source === 'GDELT' ? 'Past 7 days' : 'GDELT fallback available') }}</span></div>
           </form>
 
+          <section class="panel grounded-news-panel" aria-label="Grounded company news analysis">
+            <div class="results-heading"><div><p class="eyebrow">LANGCHAIN RAG · ARCHIVED COMPANY NEWS</p><h2>Ask a sourced news question</h2><p class="ai-model-status">Answers use only retrieved articles published before the displayed cutoff. This feature does not create or change stock probabilities.</p></div></div>
+            <form (submit)="$event.preventDefault(); askGroundedNewsQuestion()">
+              <div class="search-controls">
+                <label>Company
+                  <select [value]="groundedNewsSymbol()" (change)="setGroundedNewsSymbol($any($event.target).value)">
+                    @for (stock of ragNewsStocks; track stock.symbol) { <option [value]="stock.symbol">{{ stock.name }} ({{ stock.symbol }})</option> }
+                  </select>
+                </label>
+                <label class="grounded-news-question">Question
+                  <input type="text" maxlength="500" [value]="groundedNewsQuestion()" (input)="updateGroundedNewsQuestion($any($event.target).value)" placeholder="What recent company risks or earnings updates were reported?">
+                </label>
+                <button class="primary-button" type="submit" [disabled]="groundedNewsLoading() || !groundedNewsQuestion().trim()">
+                  {{ groundedNewsLoading() ? 'Retrieving and analyzing' : 'Ask with sources' }}
+                </button>
+              </div>
+            </form>
+            @if (groundedNewsError()) { <div class="notice notice-error" role="alert">{{ groundedNewsError() }}</div> }
+            @if (groundedNewsResponse(); as grounded) {
+              <div class="grounded-news-answer" role="status">
+                <div class="market-freshness-line">
+                  <span>{{ grounded.symbol }} · {{ grounded.embedding_model }} embeddings · cutoff {{ grounded.cutoff | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST</span>
+                  <span>Source check {{ grounded.evidence_status.replaceAll('_', ' ') }} · {{ grounded.citations.length }} sources</span>
+                </div>
+                @if (grounded.evidence_status === 'mixed_provider_sentiment') { <div class="notice notice-warning">Retrieved articles carry both positive and negative provider sentiment labels. This indicates mixed tone, not a verified factual contradiction; review the cited sources.</div> }
+                <p>{{ grounded.answer }}</p>
+                @if (grounded.citations.length) {
+                  <div class="grounded-news-citations">
+                    @for (citation of grounded.citations; track citation.article_id) {
+                      <article>
+                        @if (citation.url) { <a [href]="citation.url" target="_blank" rel="noopener noreferrer">{{ citation.title }} ↗</a> } @else { <strong>{{ citation.title }}</strong> }
+                        <small>{{ citation.source }} · {{ citation.provider }} · published {{ citation.published_at | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST · archived {{ citation.retrieved_at | date:'dd MMM y, HH:mm':'Asia/Kolkata' }} IST</small>
+                        <p>{{ citation.excerpt }}</p>
+                      </article>
+                    }
+                  </div>
+                }
+                <small>Chroma vector search · indexed {{ grounded.indexed_article_count }} articles / {{ grounded.indexed_chunk_count }} chunks. No matching articles returns an explicit no-evidence answer.</small>
+              </div>
+            }
+          </section>
+
           <aside class="trade-connect panel">
             <div class="trade-connect-copy"><p class="eyebrow">TRADING DATA</p><h2>Live quotes are available</h2><p>Open Stock → Live for public NIFTY and NSE price snapshots. Read-only holdings and positions still require an Upstox access token in the backend `.env`; the Zerodha keys present there are not wired into this application.</p></div>
             <button type="button" class="secondary-button" (click)="setSection('stock')">Open live quotes <span>→</span></button>
@@ -114,6 +156,7 @@
             <div class="market-freshness-line">
               <span>{{ news.source }} · {{ news.cache_status ?? 'fresh' }} cache</span>
               <span>Last retrieved {{ news.retrieved_at ? (news.retrieved_at | date:'dd MMM, HH:mm:ss':'Asia/Kolkata') : 'time unavailable' }} IST</span>
+              <span>Archived {{ news.archived_article_count ?? 0 }} company-linked articles for point-in-time analysis</span>
               @if (news.cache_age_seconds !== undefined) { <span>Cache age {{ news.cache_age_seconds }} sec</span> }
             </div>
             <section class="news-summary panel">
@@ -297,7 +340,12 @@
 
           <section class="ai-opportunities panel" aria-label="Validated high-confidence opportunities">
             <div class="ai-history-heading">
-              <div><p class="eyebrow">STRICTLY ABOVE 80% · VALIDATED MODELS</p><h2>Next-session opportunities</h2><p class="ai-model-status">{{ aiStockOpportunities()?.notice ?? 'Checking live quotes, model validation, history and FinBERT sentiment.' }}</p></div>
+              <div><p class="eyebrow">STRICTLY ABOVE {{ aiOpportunityThresholdPercent() }}% · VALIDATED MODELS</p><h2>Next-session opportunities</h2><p class="ai-model-status">{{ aiStockOpportunities()?.notice ?? 'Checking live quotes, model validation, history and FinBERT sentiment.' }}</p></div>
+              <label class="ai-opportunity-threshold">Minimum calibrated upward probability
+                <select [value]="aiOpportunityThresholdPercent()" (change)="setAiOpportunityThreshold($any($event.target).value)">
+                  <option value="65">Above 65%</option><option value="70">Above 70%</option><option value="80">Above 80%</option>
+                </select>
+              </label>
               <button type="button" class="secondary-button" [disabled]="aiOpportunitiesLoading()" (click)="loadAiStockOpportunities()"><span [class.spinning]="aiOpportunitiesLoading()">↻</span> {{ aiOpportunitiesLoading() ? 'Screening watchlist' : 'Refresh opportunities' }}</button>
             </div>
             @if (aiOpportunitiesError()) { <div class="notice notice-error" role="alert">{{ aiOpportunitiesError() }}</div> }
@@ -341,6 +389,7 @@
                         <strong>Gemma 3 · {{ opportunity.gemma_explanation.status }}</strong>
                         <p>{{ opportunity.gemma_explanation.summary }}</p>
                         @if (opportunity.gemma_explanation.analysis) { <p>{{ opportunity.gemma_explanation.analysis }}</p> }
+                        @if (opportunity.gemma_explanation.status === 'pending') { <p>Stock screening and calibrated probability are complete; the local model explanation is running separately.</p> }
                         @if (opportunity.gemma_explanation.status === 'unavailable') { <p>Validated model results remain available; the explanation service did not respond.</p> }
                         <small>Model {{ opportunity.model_version }} · prediction {{ opportunity.prediction_timestamp | date:'dd MMM y, HH:mm:ss':'Asia/Kolkata' }} IST · {{ opportunity.calendar_note }}</small>
                       </div>
@@ -399,7 +448,7 @@
               </label>
               <label>Min. upward probability
                 <select [value]="aiPickMinProbability()" (change)="setAiPickMinProbability($any($event.target).value)">
-                  <option value="0">Any</option><option value="60">60%+</option><option value="70">70%+</option><option value="80">80%+</option>
+                  <option value="0">Any</option><option value="60">60%+</option><option value="65">65%+</option><option value="70">70%+</option><option value="80">80%+</option>
                 </select>
               </label>
             </div>
@@ -459,7 +508,7 @@
                         <div class="ai-model-probability">
                           <span>{{ prediction.direction }} · calibrated upward probability</span>
                           <strong>{{ prediction.upward_probability! * 100 | number:'1.1-1' }}%</strong>
-                          <small>{{ prediction.probability_threshold_met ? 'Above the 80% screening threshold' : 'Below the 80% screening threshold' }} · not an accuracy claim</small>
+                          <small>{{ prediction.upward_probability! * 100 > aiOpportunityThresholdPercent() ? 'Above the selected screening threshold' : 'Below the selected screening threshold' }} · not an accuracy claim</small>
                         </div>
                         <div class="ai-model-detail">
                           <span>Downward probability <strong>{{ prediction.downward_probability! * 100 | number:'1.1-1' }}%</strong></span>
@@ -501,8 +550,8 @@
                   }
                 </section>
                 <section class="ai-company-news" aria-label="Company-specific news and sentiment">
+                  <div class="ai-history-heading"><div><p class="eyebrow">NEWS INTELLIGENCE · {{ pick.symbol }}</p><h3>Company news & FinBERT sentiment</h3></div><div class="ai-history-heading-actions">@if (aiPickCompanyNews(pick.symbol); as companyNews) { <span class="ai-history-freshness">{{ companyNews.analyzedArticleCount }} / {{ companyNews.articleCount }} analyzed</span> }<button type="button" class="secondary-button" (click)="openGroundedNewsForAiPick(pick.symbol)">Ask news with sources</button><button type="button" class="secondary-button" [disabled]="aiPickNewsImpactLoading()" (click)="evaluateAiPickNewsImpact(pick.symbol)">{{ aiPickNewsImpactLoading() ? 'Evaluating' : 'Evaluate news impact' }}</button></div></div>
                   @if (aiPickCompanyNews(pick.symbol); as companyNews) {
-                    <div class="ai-history-heading"><div><p class="eyebrow">NEWS INTELLIGENCE · {{ pick.symbol }}</p><h3>Company news & FinBERT sentiment</h3></div><span class="ai-history-freshness">{{ companyNews.analyzedArticleCount }} / {{ companyNews.articleCount }} analyzed</span></div>
                     @if (companyNews.articles.length) {
                       <div class="ai-news-summary">
                         <span class="ai-news-score">Overall score <strong>{{ companyNews.sentimentScore === null ? '—' : (companyNews.sentimentScore | number:'1.2-2') }}</strong></span>
@@ -531,6 +580,21 @@
                     <div class="ai-history-empty">{{ aiPickSentimentLoading() ? 'Loading company-specific FinBERT results…' : 'Company sentiment data is not available.' }}</div>
                   }
                   <p class="ai-history-footnote">The stock-level FinBERT probabilities use the preceding {{ aiPickSentiment()?.lookbackDays ?? 7 }} days and are weighted by freshness ({{ aiPickSentiment()?.freshnessHalfLifeHours ?? 48 }}-hour half-life) and company relevance. Items without a publication timestamp and items at or after the cutoff are excluded. Headline sentiment is descriptive, not a forecast.</p>
+                  @if (aiPickNewsImpactError()) { <div class="notice notice-error" role="alert">{{ aiPickNewsImpactError() }}</div> }
+                  @if (aiPickNewsImpactFor(pick.symbol); as impact) {
+                    @if (impact.status === 'ready' && impact.without_news && impact.with_news && impact.metric_delta_with_news_minus_without_news) {
+                      <div class="ai-news-summary">
+                        <span class="ai-news-event">Without news · Brier {{ impact.without_news.brier_score | number:'1.3-3' }} · ECE {{ impact.without_news.expected_calibration_error | number:'1.3-3' }}</span>
+                        <span class="ai-news-event">With FinBERT news · Brier {{ impact.with_news.brier_score | number:'1.3-3' }} · ECE {{ impact.with_news.expected_calibration_error | number:'1.3-3' }}</span>
+                        <span class="ai-news-event">Δ Brier {{ impact.metric_delta_with_news_minus_without_news.brier_score | number:'1.3-3' }}</span>
+                        <span class="ai-news-event">Δ ECE {{ impact.metric_delta_with_news_minus_without_news.expected_calibration_error | number:'1.3-3' }}</span>
+                        <span class="ai-news-event">{{ impact.with_news.sample_count }} matched test outcomes · {{ impact.news_available_sample_count }} with archived news</span>
+                      </div>
+                      <p class="ai-history-footnote">Paired expanding-window XGBoost test; negative Brier/ECE deltas favor the news variant. This audit does not change model probabilities, and one result is not proof of future accuracy.</p>
+                    } @else {
+                      <div class="ai-history-empty">{{ impact.message ?? ('News impact audit: ' + impact.status.replaceAll('_', ' ')) }} @if (impact.news_available_sample_count !== undefined) { Archived news covers {{ impact.news_available_sample_count }} evaluation observations; {{ impact.required_news_sample_count ?? 30 }} are required. }</div>
+                    }
+                  }
                 </section>
 
                 <section class="ai-history-panel" aria-label="Stored daily OHLCV history">

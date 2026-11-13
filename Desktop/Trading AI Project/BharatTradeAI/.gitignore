@@ -24,6 +24,7 @@ Thumbs.db
 # Data / local stores
 *.sqlite3
 *.db
+.data/
 
 # Build / test
 .pytest_cache/

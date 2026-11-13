@@ -24,6 +24,33 @@ class AIStockNews(Base):
     event_category = Column(String(40), nullable=False)
 
 
+class AIStockNewsSnapshot(Base):
+    __tablename__ = "ai_stock_news_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "article_id",
+            "content_hash",
+            name="uq_ai_stock_news_snapshot_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(50), nullable=False, index=True)
+    article_id = Column(String(64), nullable=False, index=True)
+    content_hash = Column(String(64), nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    url = Column(Text, nullable=True)
+    source = Column(String(200), nullable=False)
+    provider = Column(String(50), nullable=False)
+    published_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    retrieved_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    sentiment_label = Column(String(20), nullable=False)
+    sentiment_score = Column(Float, nullable=False)
+    event_category = Column(String(40), nullable=False)
+
+
 class AIPickNewsSync(Base):
     __tablename__ = "ai_pick_news_sync"
 
@@ -53,4 +80,5 @@ class AIStockArticleSentiment(Base):
     probabilities = Column(JSON, nullable=False)
     sentiment_score = Column(Float, nullable=False)
     relevance_score = Column(Float, nullable=False)
+    freshness_weight = Column(Float, nullable=False)
     analyzed_at = Column(DateTime(timezone=True), nullable=False)

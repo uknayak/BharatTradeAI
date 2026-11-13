@@ -116,6 +116,49 @@ def test_opportunity_selection_requires_fresh_validated_probability_over_80(monk
     }
 
 
+@pytest.mark.parametrize(
+    ("threshold_percent", "expected_symbols"),
+    [
+        (65, ["A", "B", "C", "D", "E"]),
+        (70, ["A", "B", "C"]),
+        (80, ["A"]),
+    ],
+)
+def test_opportunity_selection_applies_strict_threshold_and_probability_order(
+    monkeypatch, threshold_percent, expected_symbols
+):
+    predictions = [
+        _prediction("A", 0.81),
+        _prediction("B", 0.80),
+        _prediction("C", 0.71),
+        _prediction("D", 0.70),
+        _prediction("E", 0.66),
+        _prediction("F", 0.65),
+    ]
+    monkeypatch.setattr(selection, "fetch_live_quotes", lambda: {
+        "status": "ok",
+        "quotes": [_quote(row["symbol"]) for row in predictions],
+    })
+    monkeypatch.setattr(selection, "get_stock_direction_predictions", lambda: {
+        "predictions": predictions,
+    })
+    monkeypatch.setattr(selection, "get_ai_pick_sentiment", lambda *, cutoff: {"companies": []})
+
+    result = selection.build_ai_stock_opportunities(
+        now=NOW,
+        include_explanations=False,
+        threshold_percent=threshold_percent,
+    )
+
+    assert [row["symbol"] for row in result["opportunities"]] == expected_symbols
+    assert [row["upward_probability"] for row in result["opportunities"]] == sorted(
+        (row["upward_probability"] for row in result["opportunities"]),
+        reverse=True,
+    )
+    assert result["threshold"] == threshold_percent / 100
+    assert result["threshold_comparison"] == "strictly greater than"
+
+
 def test_opportunity_selection_returns_required_empty_message_without_llm_call(monkeypatch):
     monkeypatch.setattr(selection, "fetch_live_quotes", lambda: {"status": "ok", "quotes": []})
     monkeypatch.setattr(selection, "get_stock_direction_predictions", lambda: {
@@ -133,6 +176,70 @@ def test_opportunity_selection_returns_required_empty_message_without_llm_call(m
     assert result["status"] == "no_opportunities"
     assert result["opportunities"] == []
     assert result["empty_message"] == selection.NO_OPPORTUNITIES_MESSAGE
+
+
+def test_opportunity_screen_can_return_without_waiting_for_gemma(monkeypatch):
+    prediction = _prediction("RELIANCE", 0.91)
+    monkeypatch.setattr(selection, "fetch_live_quotes", lambda: {
+        "status": "ok",
+        "provider": "Yahoo Finance",
+        "quotes": [_quote("RELIANCE")],
+    })
+    monkeypatch.setattr(selection, "get_stock_direction_predictions", lambda: {
+        "predictions": [prediction],
+    })
+    monkeypatch.setattr(selection, "get_ai_pick_sentiment", lambda *, cutoff: {
+        "companies": [_sentiment("RELIANCE")],
+    })
+    monkeypatch.setattr(
+        selection,
+        "explain_stock_analyses",
+        lambda *_: pytest.fail("The non-blocking screen must not call Ollama."),
+    )
+
+    result = selection.build_ai_stock_opportunities(now=NOW, include_explanations=False)
+
+    assert result["status"] == "ready"
+    assert result["opportunities"][0]["gemma_explanation"]["status"] == "pending"
+    assert result["opportunities"][0]["quote_source"] == "Yahoo Finance"
+
+
+def test_opportunity_explanations_are_queued_and_cached(monkeypatch):
+    selection._EXPLANATION_CACHE.clear()
+    selection._EXPLANATION_PENDING.clear()
+    prediction = _prediction("RELIANCE", 0.91)
+    monkeypatch.setattr(selection, "fetch_live_quotes", lambda: {
+        "status": "ok",
+        "provider": "Yahoo Finance",
+        "quotes": [_quote("RELIANCE")],
+    })
+    monkeypatch.setattr(selection, "get_stock_direction_predictions", lambda: {
+        "predictions": [prediction],
+    })
+    monkeypatch.setattr(selection, "get_ai_pick_sentiment", lambda *, cutoff: {
+        "companies": [_sentiment("RELIANCE")],
+    })
+    screened = selection.build_ai_stock_opportunities(now=NOW, include_explanations=False)
+    opportunities = screened["opportunities"]
+    jobs = selection.queue_opportunity_explanations(opportunities)
+
+    assert len(jobs) == 1
+    assert jobs[0][1]["symbol"] == "RELIANCE"
+    assert jobs[0][1]["technical_indicators"] == INDICATORS
+    monkeypatch.setattr(selection, "explain_stock_analyses", lambda candidates: [
+        {
+            "status": "ready",
+            "provider": "Ollama",
+            "model": "gemma3:latest",
+            "summary": "Grounded output.",
+        }
+        for _ in candidates
+    ])
+    selection.run_opportunity_explanations(jobs)
+
+    assert selection.queue_opportunity_explanations(opportunities) == []
+    assert opportunities[0]["gemma_explanation"]["status"] == "ready"
+    assert not selection._EXPLANATION_PENDING
 
 
 def test_opportunity_selection_excludes_stale_intraday_quotes(monkeypatch):
@@ -198,6 +305,10 @@ def test_gemma_explanation_only_uses_known_signal_labels_and_server_facts(monkey
 
     assert captured["url"] == "http://localhost:11434/api/generate"
     assert captured["request"]["model"] == "gemma3"
+    assert captured["request"]["format"] == "json"
+    assert captured["request"]["keep_alive"] == "5m"
+    assert captured["request"]["options"]["num_ctx"] == 2048
+    assert "technical_indicator_summary" in captured["request"]["prompt"]
     assert result["status"] == "ready"
     assert result["bullish_signals"] == [signals[0]["label"]]
     assert result["risks"] == [signals[1]["label"]]
@@ -249,15 +360,73 @@ def test_gemma_explanation_rejects_unknown_signals_and_connection_errors(monkeyp
 def test_opportunities_api_exposes_selection(monkeypatch):
     expected = {
         "status": "no_opportunities",
+        "threshold": 0.8,
         "opportunities": [],
         "empty_message": selection.NO_OPPORTUNITIES_MESSAGE,
     }
     monkeypatch.setattr(
         "app.api.routes.ai_stock_picks.build_ai_stock_opportunities",
-        lambda: expected,
+        lambda **kwargs: expected,
     )
 
     response = TestClient(app).get("/api/v1/ai-stock-picks/opportunities")
 
     assert response.status_code == 200
     assert response.json()["empty_message"] == selection.NO_OPPORTUNITIES_MESSAGE
+    assert response.json()["threshold"] == 0.8
+
+
+def test_opportunities_api_accepts_only_supported_thresholds(monkeypatch):
+    from app.api.routes import ai_stock_picks
+
+    calls = []
+    monkeypatch.setattr(
+        ai_stock_picks,
+        "build_ai_stock_opportunities",
+        lambda **kwargs: calls.append(kwargs) or {
+            "status": "no_opportunities",
+            "opportunities": [],
+            "empty_message": "No qualifying opportunities.",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/ai-stock-picks/opportunities?threshold_percent=70")
+    invalid_response = client.get("/api/v1/ai-stock-picks/opportunities?threshold_percent=75")
+
+    assert response.status_code == 200
+    assert calls == [{"include_explanations": False, "threshold_percent": 70}]
+    assert invalid_response.status_code == 422
+
+
+def test_opportunities_api_queues_gemma_after_screening(monkeypatch):
+    from app.api.routes import ai_stock_picks
+
+    calls = []
+    opportunity = {"symbol": "RELIANCE"}
+    expected = {"status": "ready", "opportunities": [opportunity]}
+    jobs = [("job",)]
+    monkeypatch.setattr(
+        ai_stock_picks,
+        "build_ai_stock_opportunities",
+        lambda **kwargs: calls.append(("build", kwargs)) or expected,
+    )
+    monkeypatch.setattr(
+        ai_stock_picks,
+        "queue_opportunity_explanations",
+        lambda opportunities: calls.append(("queue", opportunities)) or jobs,
+    )
+    monkeypatch.setattr(
+        ai_stock_picks,
+        "run_opportunity_explanations",
+        lambda queued: calls.append(("run", queued)),
+    )
+
+    response = TestClient(app).get("/api/v1/ai-stock-picks/opportunities")
+
+    assert response.status_code == 200
+    assert calls == [
+        ("build", {"include_explanations": False, "threshold_percent": 80}),
+        ("queue", [opportunity]),
+        ("run", jobs),
+    ]

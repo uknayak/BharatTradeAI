@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from math import sin
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,11 +14,136 @@ from app.db.models import MarketInstrument
 torch = pytest.importorskip("torch")
 xgboost = pytest.importorskip("xgboost")
 
+from app.ml import ensemble
 from app.ml.ensemble import train_direction_ensemble
 from app.ml.features import build_direction_features, build_direction_training_set
 from app.ml.lstm import build_ohlcv_sequences, predict_lstm_probabilities, train_lstm_model
 from app.main import app
 from app.services.ai_picks import prediction
+
+
+def test_historical_news_feature_requires_publication_and_retrieval_before_cutoff():
+    cutoff = datetime(2026, 11, 9, 10, 0, tzinfo=timezone.utc)
+
+    def article(*, published_at, retrieved_at, analyzed_at):
+        stored_article = SimpleNamespace(published_at=published_at, retrieved_at=retrieved_at)
+        stored_sentiment = SimpleNamespace(analyzed_at=analyzed_at)
+        return stored_article, stored_sentiment
+
+    assert prediction._news_was_available_by(
+        *article(
+            published_at=cutoff - timedelta(minutes=2),
+            retrieved_at=cutoff - timedelta(minutes=1),
+            analyzed_at=cutoff - timedelta(seconds=30),
+        ),
+        cutoff,
+    )
+    assert not prediction._news_was_available_by(
+        *article(
+            published_at=cutoff - timedelta(days=1),
+            retrieved_at=cutoff,
+            analyzed_at=cutoff - timedelta(days=1),
+        ),
+        cutoff,
+    )
+    assert not prediction._news_was_available_by(
+        *article(
+            published_at=cutoff,
+            retrieved_at=cutoff - timedelta(days=1),
+            analyzed_at=cutoff - timedelta(days=1),
+        ),
+        cutoff,
+    )
+    assert not prediction._news_was_available_by(
+        *article(
+            published_at=cutoff - timedelta(days=1),
+            retrieved_at=cutoff - timedelta(hours=2),
+            analyzed_at=cutoff,
+        ),
+        cutoff,
+    )
+
+
+def test_news_feature_impact_compares_same_expanding_window_folds(monkeypatch):
+    features = [
+        {
+            "return_1": index / 1000,
+            "news_sentiment": 0.2,
+            "news_available": 1.0,
+        }
+        for index in range(240)
+    ]
+    labels = [index % 2 for index in range(240)]
+    captured_matrices = []
+
+    def fake_walk_forward(matrix, labels, *, start_index, step):
+        captured_matrices.append(matrix)
+        return {
+            "method": "expanding_window",
+            "model": "xgboost",
+            "step": step,
+            "sample_count": 40,
+            "precision": 0.6,
+            "recall": 0.7,
+            "f1": 0.64,
+            "brier_score": 0.2 if len(captured_matrices) == 1 else 0.18,
+            "expected_calibration_error": 0.1 if len(captured_matrices) == 1 else 0.08,
+        }
+
+    monkeypatch.setattr(ensemble, "_fit_walk_forward_xgboost", fake_walk_forward)
+    result = ensemble.compare_news_feature_walk_forward(
+        features,
+        labels,
+        start_index=200,
+        step=30,
+    )
+
+    assert result["status"] == "ready"
+    assert len(captured_matrices) == 2
+    assert captured_matrices[0].shape[1] == 1
+    assert captured_matrices[1].shape[1] == 3
+    assert result["without_news"]["sample_count"] == result["with_news"]["sample_count"]
+    assert result["metric_delta_with_news_minus_without_news"]["brier_score"] == pytest.approx(-0.02)
+    assert result["metric_delta_with_news_minus_without_news"]["expected_calibration_error"] == pytest.approx(-0.02)
+
+
+def test_news_feature_impact_requires_archived_news_in_test_window(monkeypatch):
+    features = [
+        {
+            "return_1": index / 1000,
+            "news_sentiment": 0.2,
+            "news_available": float(index < 200),
+        }
+        for index in range(240)
+    ]
+    labels = [index % 2 for index in range(240)]
+    monkeypatch.setattr(
+        ensemble,
+        "_fit_walk_forward_xgboost",
+        lambda *args, **kwargs: pytest.fail("No evaluation should run without enough test-fold news."),
+    )
+
+    result = ensemble.compare_news_feature_walk_forward(features, labels, start_index=200)
+
+    assert result["status"] == "insufficient_news_history"
+    assert result["news_available_sample_count"] == 0
+
+
+def test_news_feature_impact_api_forwards_symbol_and_step(monkeypatch):
+    from app.api.routes import ai_stock_picks
+
+    monkeypatch.setattr(
+        ai_stock_picks,
+        "evaluate_stock_news_feature_impact",
+        lambda symbol, *, step: {"symbol": symbol, "step": step, "status": "ready"},
+    )
+    client = TestClient(app)
+    response = client.get("/api/v1/ai-stock-picks/models/news-impact/TCS?step=30")
+    invalid_step = client.get("/api/v1/ai-stock-picks/models/news-impact/TCS?step=10")
+
+    assert response.status_code == 200
+    assert response.json() == {"symbol": "TCS", "step": 30, "status": "ready"}
+    assert invalid_step.status_code == 422
 
 
 def _candles(count: int = 500) -> list[dict]:

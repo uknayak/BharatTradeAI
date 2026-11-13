@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -37,8 +38,13 @@ class Settings(BaseSettings):
     upstox_access_token: str = ""
 
     llm_provider: str = "ollama"
-    model_name: str = "gemma3:latest"
+    model_name: str = Field(
+        default="gemma3:latest",
+        validation_alias=AliasChoices("OLLAMA_MODEL", "MODEL_NAME"),
+    )
     ollama_base_url: str = "http://localhost:11434"
+    rag_embedding_model: str = "nomic-embed-text"
+    rag_vector_store_path: Path = BASE_DIR / ".data" / "rag" / "chroma"
 
     secret_key: str = "change-me-in-production"
 

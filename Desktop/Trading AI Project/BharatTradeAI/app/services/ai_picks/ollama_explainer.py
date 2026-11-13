@@ -9,8 +9,8 @@ import requests
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-OLLAMA_TIMEOUT_SECONDS = 45
-MAX_EXPLANATION_TOKENS = 180
+OLLAMA_TIMEOUT_SECONDS = 180
+MAX_EXPLANATION_TOKENS = 100
 
 
 class OllamaExplanationUnavailable(RuntimeError):
@@ -71,15 +71,41 @@ def _explanation_from_evidence(
 
 
 def _request_facts(payload: dict[str, Any], signals: list[dict[str, str]]) -> dict[str, Any]:
+    indicators = payload["technical_indicators"]
+    pattern = payload["historical_pattern"]
     return {
         "symbol": payload["symbol"],
         "exchange": payload["exchange"],
-        "direction": payload["direction"],
-        "upward_probability": payload["upward_probability"],
-        "current_price": payload["current_price"],
-        "daily_change_pct": payload["daily_change_pct"],
-        "technical_indicators": payload["technical_indicators"],
-        "historical_pattern": payload["historical_pattern"],
+        "prediction": {
+            "direction": payload["direction"],
+            "upward_probability": payload["upward_probability"],
+        },
+        "market_snapshot": {
+            "current_price": payload["current_price"],
+            "daily_change_pct": payload["daily_change_pct"],
+            "source": payload.get("quote_source", "Yahoo Finance"),
+            "timestamp": payload.get("quote_timestamp"),
+        },
+        "technical_indicator_summary": {
+            key: indicators[key]
+            for key in (
+                "rsi_14",
+                "macd_pct",
+                "macd_signal_pct",
+                "ema_20_gap_pct",
+                "ema_50_gap_pct",
+                "sma_200_gap_pct",
+                "bollinger_position",
+                "atr_14_pct",
+                "volatility_20_daily_pct",
+            )
+            if key in indicators
+        },
+        "historical_pattern_summary": {
+            key: pattern[key]
+            for key in ("latest_daily_return_pct", "momentum_5d_pct", "momentum_20d_pct")
+            if key in pattern
+        },
         "news_sentiment": payload["news_sentiment"],
         "risk_level": payload["risk_level"],
         "available_signals": signals,
@@ -141,9 +167,12 @@ def explain_stock_analyses(
         "You are a financial-analysis explanation layer. The supplied market data is authoritative; "
         "never change, infer, or add prices, news, indicators, probabilities, dates, or other facts. "
         "News is already summarized and must not be expanded. For each stock select only its "
-        "available signal IDs. Put IDs into the matching bullish_signal_ids, bearish_signal_ids, "
-        "or risk_signal_ids arrays according to their supplied polarity. A signal may be omitted, "
-        "but must never be reassigned to another polarity. Do not write prose. Return JSON only "
+        "available signal IDs for the matching stock. Put IDs into the matching "
+        "bullish_signal_ids, bearish_signal_ids, or risk_signal_ids arrays according to their "
+        "supplied polarity. A signal may be omitted, but must never be reassigned to another "
+        "polarity. Use the exact id strings from available_signals; never copy a signal label into "
+        "an ID array. For example, if the available signal has id \"risk_level\", return "
+        "\"risk_level\", not its description. Do not write prose. Return JSON only "
         "with exactly one key, analyses, whose value is an array containing one object per input "
         "stock. Each object must contain exactly symbol, bullish_signal_ids, bearish_signal_ids, "
         "and risk_signal_ids. Analysis facts:\n"
@@ -158,7 +187,8 @@ def explain_stock_analyses(
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0, "num_predict": MAX_EXPLANATION_TOKENS},
+                "options": {"temperature": 0, "num_predict": MAX_EXPLANATION_TOKENS, "num_ctx": 2048},
+                "keep_alive": "5m",
             },
             timeout=OLLAMA_TIMEOUT_SECONDS,
         )

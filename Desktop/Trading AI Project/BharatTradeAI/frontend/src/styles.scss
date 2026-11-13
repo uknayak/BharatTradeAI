@@ -252,6 +252,8 @@ button:focus-visible, a:focus-visible { outline: 3px solid #7da895; outline-offs
 .ai-history-heading .eyebrow { margin-bottom: 5px; }
 .ai-history-heading h3 { margin: 0; color: #42564a; font-size: 11px; }
 .ai-history-freshness { color: #87938a; font: 8px var(--mono); text-align: right; }
+.ai-history-heading-actions { display: flex; align-items: center; gap: 10px; }
+.grounded-news-panel { display: grid; gap: 12px; padding: 18px 20px; }.grounded-news-panel .results-heading { margin-top: 0; }.grounded-news-panel select { min-height: 40px; padding: 0 10px; border: 1px solid #dce4dc; background: #fcfdfb; color: var(--ink); font: 11px var(--sans); }.grounded-news-panel label { display: grid; gap: 6px; color: #44564c; font-size: 10px; font-weight: 700; }.grounded-news-question { flex: 1 1 300px; }.grounded-news-answer { padding: 12px; border: 1px solid var(--line); background: #fbfcfa; color: #506056; font-size: 11px; line-height: 1.65; }.grounded-news-answer > p { margin: 12px 0; color: #34483e; }.grounded-news-citations { display: grid; gap: 8px; margin: 10px 0; }.grounded-news-citations article { padding: 10px; border: 1px solid var(--line); background: #fff; }.grounded-news-citations a, .grounded-news-citations strong { color: #367458; font-size: 10px; }.grounded-news-citations small { display: block; margin-top: 5px; color: #87928a; font: 8px var(--mono); }.grounded-news-citations p { margin: 7px 0 0; font-size: 9px; }
 .ai-history-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0 19px 11px; color: #87938a; font: 8px var(--mono); }
 .ai-history-sync-warning { margin: 0 19px 10px; padding: 8px 10px; border: 1px solid #eddec8; background: #fffaf1; color: #806b4d; font-size: 9px; line-height: 1.5; }
 .ai-history-freshness-pill { padding: 3px 6px; border: 1px solid #e1e7e1; text-transform: uppercase; }
@@ -286,6 +288,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid #7da895; outline-offs
   .ai-pick-rationale { padding: 13px 15px 5px; }
   .ai-pick-detail-disclaimer { margin: 9px 15px 14px; }
   .ai-history-heading { flex-direction: column; padding: 13px 15px 10px; }
+  .ai-history-heading-actions { align-items: flex-start; flex-direction: column; }
   .ai-history-freshness { text-align: left; }
   .ai-news-summary { padding: 0 15px 10px; }
   .ai-news-article { padding: 11px 15px; }

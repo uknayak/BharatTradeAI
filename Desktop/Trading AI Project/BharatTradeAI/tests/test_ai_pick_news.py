@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.database import Base
 from app.main import app
 from app.services.ai_picks import news
-from app.services.ai_picks.news_models import AIStockNews
+from app.services.ai_picks.news_models import AIStockNews, AIStockNewsSnapshot
 
 
 def _isolated_sessions(monkeypatch):
@@ -160,6 +160,57 @@ def test_ai_news_sync_enforces_cooldown(monkeypatch):
 
     with pytest.raises(news.NewsSyncCooldownError):
         news.sync_ai_pick_news(manual=True)
+
+
+def test_news_intelligence_archive_keeps_immutable_content_versions(monkeypatch):
+    sessions = _isolated_sessions(monkeypatch)
+    instrument = next(row for row in news.WATCHLIST if row["symbol"] == "TCS")
+    monkeypatch.setattr(news, "WATCHLIST", (instrument,))
+    article = {
+        "title": "TCS reports quarterly earnings",
+        "description": "Original report details",
+        "url": "https://news.example/tcs-earnings",
+        "source": "Example Finance",
+        "published_at": "2026-11-03T08:00:00+00:00",
+        "retrieved_at": "2026-11-03T08:05:00+00:00",
+        "symbols": ["TCS"],
+        "sentiment": {"label": "NEUTRAL", "score": 0.0},
+        "event": "EARNINGS",
+    }
+
+    first = news.archive_news_intelligence_articles({
+        "source": "GDELT",
+        "retrieved_at": article["retrieved_at"],
+        "articles": [article],
+    })
+    revised = {
+        **article,
+        "description": "Later correction with new details",
+        "retrieved_at": "2026-11-04T08:05:00+00:00",
+    }
+    news.archive_news_intelligence_articles({
+        "source": "GDELT",
+        "retrieved_at": revised["retrieved_at"],
+        "articles": [revised],
+    })
+
+    db = sessions()
+    try:
+        snapshots = (
+            db.query(AIStockNewsSnapshot)
+            .filter_by(symbol="TCS")
+            .order_by(AIStockNewsSnapshot.retrieved_at.asc())
+            .all()
+        )
+        current = db.query(AIStockNews).filter_by(symbol="TCS").one()
+    finally:
+        db.close()
+
+    assert first["archived_article_count"] == 1
+    assert len(snapshots) == 2
+    assert snapshots[0].description == "Original report details"
+    assert snapshots[1].description == "Later correction with new details"
+    assert current.description == "Later correction with new details"
 
 
 def test_ai_pick_news_api_requires_timezone_for_cutoff():

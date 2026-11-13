@@ -156,6 +156,7 @@ def _persist_predictions(
             row.probabilities = probabilities
             row.sentiment_score = probabilities["positive"] - probabilities["negative"]
             row.relevance_score = _relevance_score(article)
+            row.freshness_weight = _freshness_weight(article.published_at, analyzed_at)
             row.analyzed_at = analyzed_at
         db.commit()
     except SQLAlchemyError:

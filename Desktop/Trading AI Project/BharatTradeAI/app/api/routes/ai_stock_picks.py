@@ -2,6 +2,7 @@ from datetime import datetime
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.ai_picks.news import (
     NewsSyncCooldownError,
@@ -17,6 +18,7 @@ from app.services.ai_picks.sentiment_analysis import (
 from app.services.ai_picks.prediction import (
     PredictionModelUnavailable,
     PredictionTrainingInProgress,
+    evaluate_stock_news_feature_impact,
     get_stock_direction_prediction,
     get_stock_direction_predictions,
     get_stock_direction_watchlist_job,
@@ -24,11 +26,31 @@ from app.services.ai_picks.prediction import (
     start_stock_direction_watchlist_job,
     train_stock_direction_model,
 )
-from app.services.ai_picks.selection import build_ai_stock_opportunities
+from app.services.ai_picks.rag import NewsRagUnavailable, answer_company_news_question
+from app.services.ai_picks.selection import (
+    build_ai_stock_opportunities,
+    queue_opportunity_explanations,
+    run_opportunity_explanations,
+)
 from app.services.sentiment.base import SentimentModelUnavailable
 from config.settings import settings
 
 router = APIRouter(prefix="/api/v1/ai-stock-picks", tags=["AI Stock Picks"])
+
+
+class GroundedNewsQuestion(BaseModel):
+    symbol: str = Field(min_length=1, max_length=50)
+    question: str = Field(min_length=1, max_length=500)
+    cutoff: str | None = Field(default=None, max_length=50)
+    limit: int = Field(default=5, ge=1, le=8)
+
+    @field_validator("symbol", "question")
+    @classmethod
+    def require_non_whitespace(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("This field must not be blank.")
+        return normalized
 
 
 def _parse_cutoff(cutoff: str | None) -> datetime | None:
@@ -112,6 +134,38 @@ def analyze_stock_pick_sentiment(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.post("/news/grounded-analysis")
+def grounded_company_news_analysis(request: GroundedNewsQuestion) -> dict:
+    """Answer a company-news question from archived, cutoff-bounded sources."""
+    try:
+        return answer_company_news_question(
+            symbol=request.symbol,
+            question=request.question,
+            cutoff=_parse_cutoff(request.cutoff),
+            limit=request.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NewsRagUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/models/news-impact/{symbol}")
+def stock_pick_news_feature_impact(
+    symbol: str,
+    step: int = Query(default=60, ge=30, le=120),
+) -> dict:
+    """Compare point-in-time news and no-news XGBoost variants on matched future folds."""
+    try:
+        return evaluate_stock_news_feature_impact(symbol, step=step)
+    except PredictionTrainingInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PredictionModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.post("/models/train/{symbol}")
 def train_stock_pick_model(
     symbol: str,
@@ -160,9 +214,24 @@ def stock_pick_predictions() -> dict:
 
 
 @router.get("/opportunities")
-def stock_pick_opportunities() -> dict:
-    """Return fresh, validated model picks above 80%, ranked by probability."""
-    return build_ai_stock_opportunities()
+def stock_pick_opportunities(
+    background_tasks: BackgroundTasks,
+    threshold_percent: int = Query(default=80, ge=65, le=80),
+) -> dict:
+    """Return fresh, validated model picks above the selected probability threshold."""
+    if threshold_percent not in (65, 70, 80):
+        raise HTTPException(
+            status_code=422,
+            detail="Threshold must be 65, 70, or 80 percent.",
+        )
+    response = build_ai_stock_opportunities(
+        include_explanations=False,
+        threshold_percent=threshold_percent,
+    )
+    jobs = queue_opportunity_explanations(response["opportunities"])
+    if jobs:
+        background_tasks.add_task(run_opportunity_explanations, jobs)
+    return response
 
 
 @router.get("/predictions/{symbol}")

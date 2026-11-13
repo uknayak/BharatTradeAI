@@ -12,6 +12,7 @@ from app.ml.lstm import (
     predict_lstm_probabilities,
     train_lstm_model,
 )
+from app.ml.features import NEWS_DIRECTION_FEATURE_NAMES
 from app.ml.train import _estimator, _matrix
 
 MIN_SAMPLES = 200
@@ -19,6 +20,7 @@ MIN_TRAIN_SAMPLES = 120
 MIN_CALIBRATION_SAMPLES = 30
 MIN_SELECTION_SAMPLES = 20
 MIN_TEST_SAMPLES = 30
+MIN_NEWS_EVALUATION_SAMPLES = 30
 SEQUENCE_LENGTH = 30
 
 
@@ -49,12 +51,20 @@ def _metrics(labels: Sequence[int], probabilities: Sequence[float]) -> dict[str,
     actual = np.asarray(labels, dtype=int)
     scores = np.asarray(probabilities, dtype=float)
     predicted = (scores >= 0.5).astype(int)
+    calibration_error = 0.0
+    for lower, upper in zip(np.linspace(0, 0.9, 10), np.linspace(0.1, 1, 10)):
+        in_bin = (scores >= lower) & (scores < upper if upper < 1 else scores <= upper)
+        if np.any(in_bin):
+            calibration_error += float(np.mean(in_bin)) * abs(
+                float(np.mean(scores[in_bin])) - float(np.mean(actual[in_bin]))
+            )
     return {
         "sample_count": len(actual),
         "precision": float(precision_score(actual, predicted, zero_division=0)),
         "recall": float(recall_score(actual, predicted, zero_division=0)),
         "f1": float(f1_score(actual, predicted, zero_division=0)),
         "brier_score": float(brier_score_loss(actual, scores)),
+        "expected_calibration_error": calibration_error,
     }
 
 
@@ -92,7 +102,92 @@ def _fit_walk_forward_xgboost(
             "recall": None,
             "f1": None,
             "brier_score": None,
+            "expected_calibration_error": None,
         }),
+    }
+
+
+def compare_news_feature_walk_forward(
+    features: Sequence[dict[str, float]],
+    labels: Sequence[int],
+    *,
+    start_index: int,
+    step: int = 60,
+) -> dict[str, Any]:
+    """Compare XGBoost with/without archived news features on identical future folds."""
+    if len(features) != len(labels):
+        raise ValueError("News-feature rows and labels must have equal lengths.")
+    if not 0 <= start_index <= len(labels) or step <= 0:
+        raise ValueError("The walk-forward start index and step must be valid.")
+    if not features or not all(name in features[0] for name in NEWS_DIRECTION_FEATURE_NAMES):
+        return {
+            "status": "unavailable",
+            "message": "The feature set does not include the expected news inputs.",
+        }
+    news_observations = sum(
+        row["news_available"] > 0 for row in features[start_index:]
+    )
+    if news_observations < MIN_NEWS_EVALUATION_SAMPLES:
+        return {
+            "status": "insufficient_news_history",
+            "news_available_sample_count": news_observations,
+            "required_news_sample_count": MIN_NEWS_EVALUATION_SAMPLES,
+            "message": (
+                "The point-in-time news archive does not cover enough out-of-sample "
+                "observations to compare variants."
+            ),
+        }
+
+    baseline_features = [
+        {name: value for name, value in row.items() if name not in NEWS_DIRECTION_FEATURE_NAMES}
+        for row in features
+    ]
+    baseline = _fit_walk_forward_xgboost(
+        _matrix(baseline_features),
+        labels,
+        start_index=start_index,
+        step=step,
+    )
+    with_news = _fit_walk_forward_xgboost(
+        _matrix(features),
+        labels,
+        start_index=start_index,
+        step=step,
+    )
+    if baseline["sample_count"] < MIN_TEST_SAMPLES or with_news["sample_count"] != baseline["sample_count"]:
+        return {
+            "status": "insufficient_out_of_sample_data",
+            "news_available_sample_count": news_observations,
+            "without_news": baseline,
+            "with_news": with_news,
+            "message": "The paired chronological test folds did not produce enough matching outcomes.",
+        }
+
+    return {
+        "status": "ready",
+        "method": "paired_expanding_window_xgboost",
+        "step": step,
+        "news_available_sample_count": news_observations,
+        "without_news": baseline,
+        "with_news": with_news,
+        "metric_delta_with_news_minus_without_news": {
+            metric: (
+                with_news[metric] - baseline[metric]
+                if with_news[metric] is not None and baseline[metric] is not None
+                else None
+            )
+            for metric in (
+                "brier_score",
+                "expected_calibration_error",
+                "precision",
+                "recall",
+                "f1",
+            )
+        },
+        "interpretation": (
+            "Negative Brier-score and calibration-error deltas favor the news-feature variant; "
+            "review sample size and all metrics before changing production features."
+        ),
     }
 
 

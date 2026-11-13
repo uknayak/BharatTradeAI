@@ -52,6 +52,40 @@ export interface NewsResponse {
   cache_age_seconds?: number;
   retrieved_at?: string | null;
   cache_warning?: string;
+  archived_article_count?: number;
+  archived_symbols?: string[];
+}
+
+export interface GroundedNewsCitation {
+  article_id: string;
+  title: string;
+  source: string;
+  provider: string;
+  published_at: string;
+  retrieved_at: string;
+  url: string | null;
+  excerpt: string;
+  event_category: string;
+  provider_sentiment: string;
+}
+
+export interface GroundedNewsResponse {
+  status: 'ready';
+  provider: string;
+  embedding_model: string;
+  article_count: number;
+  indexed_article_count: number;
+  indexed_chunk_count: number;
+  skipped_article_count: number;
+  indexed_at: string;
+  symbol: string;
+  query: string;
+  cutoff: string;
+  retrieved_at: string;
+  evidence_status: 'no_evidence' | 'limited' | 'mixed_provider_sentiment' | 'multiple_sources';
+  citations: GroundedNewsCitation[];
+  answer: string;
+  citation_ids: string[];
 }
 
 export type IpoStatus = 'UPCOMING' | 'OPEN' | 'CLOSED' | 'LISTED';
@@ -265,9 +299,35 @@ export interface AiStockModelMetrics {
   recall: number | null;
   f1: number | null;
   brier_score: number | null;
+  expected_calibration_error?: number | null;
   method?: string;
   model?: string;
   step?: number;
+}
+
+export interface AiStockNewsFeatureImpactResponse {
+  symbol: string;
+  exchange: string;
+  provider: string;
+  evaluation: string;
+  status: string;
+  message?: string | null;
+  sample_count?: number;
+  news_available_sample_count?: number;
+  required_news_sample_count?: number;
+  market_data?: { status: string; message: string | null; sample_count: number; latest_market_time: string | null };
+  method?: string;
+  step?: number;
+  without_news?: AiStockModelMetrics;
+  with_news?: AiStockModelMetrics;
+  metric_delta_with_news_minus_without_news?: {
+    brier_score: number | null;
+    expected_calibration_error: number | null;
+    precision: number | null;
+    recall: number | null;
+    f1: number | null;
+  };
+  out_of_sample_window?: { input_start: string; input_end: string; predicted_sessions: number };
 }
 
 export interface AiStockDirectionResponse {
@@ -358,7 +418,7 @@ export interface AiStockOpportunity {
   validation_status: string;
   historical_test_metrics: AiStockModelMetrics | null;
   gemma_explanation: {
-    status: 'ready' | 'unavailable';
+    status: 'ready' | 'pending' | 'unavailable';
     provider: string;
     model: string;
     summary: string;
@@ -517,6 +577,17 @@ export class ApiService {
     }));
   }
 
+  askGroundedNewsQuestion(request: {
+    symbol: string;
+    question: string;
+    cutoff?: string;
+  }): Promise<GroundedNewsResponse> {
+    return firstValueFrom(this.http.post<GroundedNewsResponse>(
+      '/api/v1/ai-stock-picks/news/grounded-analysis',
+      request
+    ));
+  }
+
   getIpos(): Promise<IpoListResponse> {
     return firstValueFrom(this.http.get<IpoListResponse>('/api/v1/market/ipos'));
   }
@@ -567,9 +638,10 @@ export class ApiService {
     ));
   }
 
-  getAiStockOpportunities(): Promise<AiStockOpportunitiesResponse> {
+  getAiStockOpportunities(thresholdPercent: 65 | 70 | 80 = 80): Promise<AiStockOpportunitiesResponse> {
     return firstValueFrom(this.http.get<AiStockOpportunitiesResponse>(
-      '/api/v1/ai-stock-picks/opportunities'
+      '/api/v1/ai-stock-picks/opportunities',
+      { params: { threshold_percent: thresholdPercent } }
     ));
   }
 
@@ -577,6 +649,13 @@ export class ApiService {
     return firstValueFrom(this.http.post<AiStockDirectionResponse>(
       `/api/v1/ai-stock-picks/models/train/${encodeURIComponent(symbol)}`,
       {}
+    ));
+  }
+
+  getAiStockNewsFeatureImpact(symbol: string, step = 60): Promise<AiStockNewsFeatureImpactResponse> {
+    return firstValueFrom(this.http.get<AiStockNewsFeatureImpactResponse>(
+      `/api/v1/ai-stock-picks/models/news-impact/${encodeURIComponent(symbol)}`,
+      { params: { step } }
     ));
   }
 

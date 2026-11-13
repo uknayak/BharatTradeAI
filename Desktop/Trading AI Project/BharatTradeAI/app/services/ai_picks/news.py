@@ -1,6 +1,8 @@
 """AI Stock Picks news collection, persistence, and cutoff-aware sentiment."""
 
 import hashlib
+import json
+import logging
 import re
 import threading
 from datetime import datetime, timedelta, timezone
@@ -13,13 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.data.news import fetch_market_news
 from app.db.database import SessionLocal
-from app.services.ai_picks.news_models import AIPickNewsSync, AIStockNews
+from app.services.ai_picks.news_models import AIPickNewsSync, AIStockNews, AIStockNewsSnapshot
 from app.services.market.live_quotes import WATCHLIST
 
+logger = logging.getLogger(__name__)
 NEWS_LOOKBACK = timedelta(days=7)
 SYNC_COOLDOWN = timedelta(minutes=15)
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
 _sync_lock = threading.Lock()
+_legacy_archive_lock = threading.Lock()
+_legacy_archive_complete = False
+_legacy_archive_session_id: int | None = None
 
 COMPANY_ALIASES: dict[str, tuple[str, ...]] = {
     "RELIANCE": ("reliance", "reliance industries"),
@@ -191,12 +197,92 @@ def _persist_news(rows: list[dict[str, Any]], synced_at: datetime) -> None:
                     setattr(row, key, _db_datetime(value) if key == "published_at" else value)
             row.retrieved_at = _db_datetime(synced_at)
 
+            snapshot_values = {
+                key: value
+                for key, value in item.items()
+                if key not in {"symbol", "article_id"}
+            }
+            snapshot_values["retrieved_at"] = _db_datetime(synced_at)
+            content_hash = hashlib.sha256(
+                json.dumps(
+                    {
+                        key: value.isoformat() if isinstance(value, datetime) else value
+                        for key, value in snapshot_values.items()
+                        if key != "retrieved_at"
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            snapshot_exists = (
+                db.query(AIStockNewsSnapshot.id)
+                .filter_by(
+                    symbol=item["symbol"],
+                    article_id=item["article_id"],
+                    content_hash=content_hash,
+                )
+                .first()
+            )
+            if snapshot_exists is None:
+                db.add(
+                    AIStockNewsSnapshot(
+                        symbol=item["symbol"],
+                        article_id=item["article_id"],
+                        content_hash=content_hash,
+                        **snapshot_values,
+                    )
+                )
+
         db.commit()
     except SQLAlchemyError:
         db.rollback()
         raise
     finally:
         db.close()
+
+
+def archive_existing_news() -> int:
+    """Create immutable retrieval snapshots for news stored before the archive rollout."""
+    global _legacy_archive_complete, _legacy_archive_session_id
+    with _legacy_archive_lock:
+        session_id = id(SessionLocal)
+        if _legacy_archive_complete and _legacy_archive_session_id == session_id:
+            return 0
+        db = SessionLocal()
+        try:
+            records = db.query(AIStockNews).all()
+            legacy_rows = [
+                {
+                    "symbol": article.symbol,
+                    "article_id": article.article_id,
+                    "title": article.title,
+                    "description": article.description,
+                    "url": article.url,
+                    "source": article.source,
+                    "provider": article.provider,
+                    "published_at": article.published_at,
+                    "sentiment_label": article.sentiment_label,
+                    "sentiment_score": article.sentiment_score,
+                    "event_category": article.event_category,
+                    "retrieved_at": article.retrieved_at,
+                }
+                for article in records
+            ]
+        except SQLAlchemyError:
+            logger.exception("Could not read the legacy company-news archive.")
+            raise
+        finally:
+            db.close()
+
+        grouped_rows: dict[datetime, list[dict[str, Any]]] = {}
+        for row in legacy_rows:
+            retrieved_at = _db_datetime(row.pop("retrieved_at"))
+            grouped_rows.setdefault(retrieved_at, []).append(row)
+        for retrieved_at, rows in grouped_rows.items():
+            _persist_news(rows, retrieved_at)
+        _legacy_archive_complete = True
+        _legacy_archive_session_id = session_id
+        return len(legacy_rows)
 
 
 def _update_sync_status(
@@ -279,6 +365,59 @@ def sync_ai_pick_news(*, provider_api_key: str = "", manual: bool = True) -> dic
         }
     finally:
         _sync_lock.release()
+
+
+def archive_news_intelligence_articles(response: dict[str, Any]) -> dict[str, Any]:
+    """Persist company-matched News Intelligence articles for point-in-time retrieval."""
+    articles = response.get("articles")
+    if not isinstance(articles, list):
+        raise ValueError("News Intelligence returned an invalid article list.")
+    provider = str(response.get("source") or "Unknown")
+    retrieved_at = _parse_published_at(response.get("retrieved_at")) or datetime.now(timezone.utc)
+    rows: list[dict[str, Any]] = []
+    for article in articles:
+        if not isinstance(article, dict):
+            continue
+        title = str(article.get("title") or "").strip()
+        published_at = _parse_published_at(article.get("published_at"))
+        if not title or published_at is None:
+            continue
+        description = str(article.get("description") or "")
+        symbols = article.get("symbols", ())
+        sentiment = article.get("sentiment")
+        sentiment = sentiment if isinstance(sentiment, dict) else {}
+        try:
+            score = float(sentiment.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        score = max(-1.0, min(1.0, score))
+        for instrument in WATCHLIST:
+            if instrument["type"] != "EQUITY" or not _matches_company(
+                instrument["symbol"], title, description, symbols
+            ):
+                continue
+            rows.append(
+                {
+                    "symbol": instrument["symbol"],
+                    "article_id": _article_id(title),
+                    "title": title,
+                    "description": description,
+                    "url": str(article.get("url") or "") or None,
+                    "source": str(article.get("source") or provider),
+                    "provider": provider,
+                    "published_at": published_at,
+                    "sentiment_label": str(sentiment.get("label") or "NEUTRAL").upper(),
+                    "sentiment_score": score,
+                    "event_category": str(article.get("event") or "GENERAL"),
+                    "retrieved_at": retrieved_at,
+                }
+            )
+    if rows:
+        _persist_news(rows, retrieved_at)
+    return {
+        "archived_article_count": len({(row["symbol"], row["article_id"]) for row in rows}),
+        "archived_symbols": sorted({row["symbol"] for row in rows}),
+    }
 
 
 def get_ai_pick_news(*, cutoff: datetime | None = None, limit: int = 10) -> dict[str, Any]:

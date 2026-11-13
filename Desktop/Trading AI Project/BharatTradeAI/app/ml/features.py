@@ -34,6 +34,7 @@ DIRECTION_FEATURE_NAMES = (
     "market_return_1d",
     "market_available",
 )
+NEWS_DIRECTION_FEATURE_NAMES = ("news_sentiment", "news_available")
 
 
 def _context_value(
