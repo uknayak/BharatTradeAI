@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.data.news import fetch_market_news
 from app.db.database import SessionLocal
 from app.services.ai_picks.news_models import AIPickNewsSync, AIStockNews, AIStockNewsSnapshot
-from app.services.market.live_quotes import WATCHLIST
+from app.services.market.live_quotes import AI_STOCK_UNIVERSE, WATCHLIST
 
 logger = logging.getLogger(__name__)
 NEWS_LOOKBACK = timedelta(days=7)
@@ -391,7 +391,7 @@ def archive_news_intelligence_articles(response: dict[str, Any]) -> dict[str, An
         except (TypeError, ValueError):
             score = 0.0
         score = max(-1.0, min(1.0, score))
-        for instrument in WATCHLIST:
+        for instrument in AI_STOCK_UNIVERSE:
             if instrument["type"] != "EQUITY" or not _matches_company(
                 instrument["symbol"], title, description, symbols
             ):
@@ -444,7 +444,7 @@ def get_ai_pick_news(*, cutoff: datetime | None = None, limit: int = 10) -> dict
         by_symbol.setdefault(record.symbol, []).append(record)
 
     companies: list[dict[str, Any]] = []
-    for instrument in WATCHLIST:
+    for instrument in AI_STOCK_UNIVERSE:
         if instrument["type"] != "EQUITY":
             continue
         articles = by_symbol.get(instrument["symbol"], [])

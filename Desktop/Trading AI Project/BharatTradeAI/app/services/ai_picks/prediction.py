@@ -24,7 +24,7 @@ from app.services.ai_picks.news_models import (
     AIStockArticleSentiment,
     AIStockNewsSnapshot,
 )
-from app.services.market.live_quotes import WATCHLIST
+from app.services.market.live_quotes import AI_STOCK_UNIVERSE as WATCHLIST
 from app.services.market.models import Candle, MarketDataSync
 from app.services.sentiment.registry import DEFAULT_MODEL_ID
 
@@ -574,6 +574,7 @@ def _prediction_payload(
     }
     return {
         "symbol": instrument["symbol"],
+        "company_name": instrument["name"],
         "exchange": instrument["exchange"],
         "sector": context.get("sector"),
         "status": "ready",
@@ -670,12 +671,14 @@ def get_stock_direction_predictions() -> dict[str, Any]:
         if instrument.get("type") != "EQUITY":
             continue
         try:
-            predictions.append(get_stock_direction_prediction(instrument["symbol"]))
+            prediction = get_stock_direction_prediction(instrument["symbol"])
+            predictions.append({**prediction, "company_name": instrument.get("name", instrument["symbol"])})
         except PredictionModelUnavailable as exc:
             logger.exception("Could not retrieve prediction state for %s.", instrument["symbol"])
             predictions.append(
                 {
                     "symbol": instrument["symbol"],
+                    "company_name": instrument.get("name", instrument["symbol"]),
                     "exchange": instrument["exchange"],
                     "status": "unavailable",
                     "validation_status": "unavailable",
@@ -721,6 +724,7 @@ def train_stock_direction_watchlist(
             record(
                 {
                     "symbol": symbol,
+                    "company_name": instrument.get("name", symbol),
                     "exchange": instrument["exchange"],
                     "status": trained["status"],
                     "validation_status": trained["validation_status"],
@@ -737,6 +741,7 @@ def train_stock_direction_watchlist(
             record(
                 {
                     "symbol": symbol,
+                    "company_name": instrument.get("name", symbol),
                     "exchange": instrument["exchange"],
                     "status": "training_in_progress",
                     "validation_status": "training_in_progress",
@@ -749,6 +754,7 @@ def train_stock_direction_watchlist(
             record(
                 {
                     "symbol": symbol,
+                    "company_name": instrument.get("name", symbol),
                     "exchange": instrument["exchange"],
                     "status": "unavailable",
                     "validation_status": "unavailable",

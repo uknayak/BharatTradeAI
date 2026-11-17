@@ -120,6 +120,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly stockChartError = signal('');
   private stockChartRequestId = 0;
   private stockRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private stockQuoteMode: 'stock' | 'ai-picks' | null = null;
+  private stockQuoteReloadPending = false;
   private gemmaExplanationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   readonly aiPickExchange = signal<AiPickExchange>('ALL');
   readonly aiPickSector = signal('ALL');
@@ -200,14 +202,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.section.set(section);
     if (section === 'stock' || section === 'ai-picks') {
       if (!this.stockRefreshTimer) {
-        void this.loadStockQuotes();
         this.stockRefreshTimer = setInterval(() => void this.loadStockQuotes(), 60_000);
       }
+      void this.loadStockQuotes();
     } else {
       this.stopStockRefresh();
       this.stopGemmaExplanationRefresh();
     }
     if (section === 'ai-picks') {
+      void this.loadAiStockPredictions();
       void this.loadAiStockOpportunities();
       this.refreshSelectedAiPickHistory();
       if (!this.aiPickSentiment() && !this.aiPickSentimentLoading()) {
@@ -275,13 +278,33 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   get aiStockPicks(): AiStockPick[] {
-    return this.stockRows.map(quote => ({
-      id: quote.symbol,
-      companyName: quote.name,
-      symbol: quote.symbol,
-      exchange: quote.exchange === 'BSE' ? 'BSE' : 'NSE',
-      sector: this.aiPickPrediction(quote.symbol)?.sector ?? null
-    }));
+    const predictions = this.aiPredictionList()?.predictions ?? [];
+    const picks = new Map<string, AiStockPick>();
+    for (const prediction of predictions) {
+      picks.set(prediction.symbol, {
+        id: prediction.symbol,
+        companyName: prediction.company_name ?? prediction.symbol,
+        symbol: prediction.symbol,
+        exchange: prediction.exchange === 'BSE' ? 'BSE' : 'NSE',
+        sector: prediction.sector ?? null
+      });
+    }
+    for (const quote of this.stockRows) {
+      if (!picks.has(quote.symbol)) {
+        picks.set(quote.symbol, {
+          id: quote.symbol,
+          companyName: quote.name,
+          symbol: quote.symbol,
+          exchange: quote.exchange === 'BSE' ? 'BSE' : 'NSE',
+          sector: this.aiPickPrediction(quote.symbol)?.sector ?? null
+        });
+      }
+    }
+    return [...picks.values()];
+  }
+
+  get aiQuotesWithPriceCount(): number {
+    return this.stockRows.filter(quote => typeof quote.lastPrice === 'number' && Number.isFinite(quote.lastPrice)).length;
   }
 
   get aiPickSectors(): string[] {
@@ -656,12 +679,19 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async loadStockQuotes(): Promise<void> {
-    if (this.stockLoading()) return;
+    const requestedMode = this.section() === 'ai-picks' ? 'ai-picks' : 'stock';
+    if (this.stockLoading()) {
+      if (this.stockQuoteMode !== requestedMode) this.stockQuoteReloadPending = true;
+      return;
+    }
 
     this.stockLoading.set(true);
+    this.stockQuoteMode = requestedMode;
     this.stockError.set('');
     try {
-      const quotes = await this.api.getLiveStockQuotes();
+      const quotes = requestedMode === 'ai-picks'
+        ? await this.api.getAiStockQuotes()
+        : await this.api.getLiveStockQuotes();
       this.stockQuotes.set(quotes);
       if (this.section() === 'stock') {
         const equities = quotes.quotes.filter(quote => quote.type === 'EQUITY');
@@ -684,6 +714,12 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     } finally {
       this.stockLoading.set(false);
+      if (this.stockQuoteReloadPending) {
+        this.stockQuoteReloadPending = false;
+        if (this.stockQuoteMode !== (this.section() === 'ai-picks' ? 'ai-picks' : 'stock')) {
+          void this.loadStockQuotes();
+        }
+      }
     }
   }
 

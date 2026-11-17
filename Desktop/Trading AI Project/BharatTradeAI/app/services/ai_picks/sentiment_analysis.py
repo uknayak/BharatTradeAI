@@ -15,7 +15,7 @@ from app.services.ai_picks.news import (
     _to_utc,
 )
 from app.services.ai_picks.news_models import AIStockArticleSentiment, AIStockNews
-from app.services.market.live_quotes import WATCHLIST
+from app.services.market.live_quotes import AI_STOCK_UNIVERSE as WATCHLIST
 from app.services.sentiment.base import (
     FinancialSentimentModel,
     SentimentModelUnavailable,

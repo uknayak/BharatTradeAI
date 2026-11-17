@@ -32,6 +32,7 @@ from app.services.ai_picks.selection import (
     queue_opportunity_explanations,
     run_opportunity_explanations,
 )
+from app.services.market.live_quotes import fetch_ai_stock_quotes
 from app.services.sentiment.base import SentimentModelUnavailable
 from config.settings import settings
 
@@ -209,8 +210,20 @@ def stock_pick_watchlist_training_status(job_id: str) -> dict:
 
 @router.get("/predictions")
 def stock_pick_predictions() -> dict:
-    """Return live-watchlist quote symbols and only validated saved predictions."""
+    """Return the tracked NIFTY 50 universe with each symbol's real model status."""
     return get_stock_direction_predictions()
+
+
+@router.get("/quotes")
+def stock_pick_quotes() -> dict:
+    """Return cached Yahoo snapshots for the expanded AI stock universe."""
+    response = fetch_ai_stock_quotes()
+    if response["status"] == "error":
+        raise HTTPException(
+            status_code=502,
+            detail=response.get("message", "Yahoo Finance could not return any market quotes."),
+        )
+    return response
 
 
 @router.get("/opportunities")

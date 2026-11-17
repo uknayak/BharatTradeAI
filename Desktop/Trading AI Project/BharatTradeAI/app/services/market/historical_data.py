@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import SessionLocal
 from app.services.market.live_quotes import (
-    WATCHLIST,
+    AI_STOCK_HISTORY_UNIVERSE as WATCHLIST,
     _fetch_chart_result,
     _number,
 )

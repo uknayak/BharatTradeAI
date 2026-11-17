@@ -3,6 +3,7 @@
 import math
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -10,6 +11,8 @@ from urllib.parse import quote
 import requests
 
 CACHE_TTL_SECONDS = 60
+AI_UNIVERSE_CACHE_TTL_SECONDS = 300
+AI_QUOTE_FETCH_WORKERS = 8
 REQUEST_TIMEOUT_SECONDS = 10
 FUTURE_CLOCK_SKEW_TOLERANCE = timedelta(minutes=2)
 QUOTE_FRESH_FOR = timedelta(minutes=5)
@@ -30,8 +33,91 @@ WATCHLIST = (
     {"symbol": "BHARTIARTL", "name": "Bharti Airtel", "exchange": "NSE", "type": "EQUITY", "yahoo_symbol": "BHARTIARTL.NS"},
     {"symbol": "AXISBANK", "name": "Axis Bank", "exchange": "NSE", "type": "EQUITY", "yahoo_symbol": "AXISBANK.NS"},
 )
+_NIFTY_50_INSTRUMENTS = tuple(
+    {
+        "symbol": symbol,
+        "name": name,
+        "exchange": "NSE",
+        "type": "EQUITY",
+        "yahoo_symbol": f"{symbol}.NS",
+    }
+    for symbol, name in (
+        ("ADANIENT", "Adani Enterprises"),
+        ("ADANIPORTS", "Adani Ports and Special Economic Zone"),
+        ("APOLLOHOSP", "Apollo Hospitals Enterprise"),
+        ("ASIANPAINT", "Asian Paints"),
+        ("AXISBANK", "Axis Bank"),
+        ("BAJAJ-AUTO", "Bajaj Auto"),
+        ("BAJFINANCE", "Bajaj Finance"),
+        ("BAJAJFINSV", "Bajaj Finserv"),
+        ("BEL", "Bharat Electronics"),
+        ("BHARTIARTL", "Bharti Airtel"),
+        ("CIPLA", "Cipla"),
+        ("COALINDIA", "Coal India"),
+        ("DRREDDY", "Dr. Reddy's Laboratories"),
+        ("EICHERMOT", "Eicher Motors"),
+        ("ETERNAL", "Eternal"),
+        ("GRASIM", "Grasim Industries"),
+        ("HCLTECH", "HCL Technologies"),
+        ("HDFCBANK", "HDFC Bank"),
+        ("HDFCLIFE", "HDFC Life Insurance"),
+        ("HINDALCO", "Hindalco Industries"),
+        ("HINDUNILVR", "Hindustan Unilever"),
+        ("ICICIBANK", "ICICI Bank"),
+        ("INDUSINDBK", "IndusInd Bank"),
+        ("INFY", "Infosys"),
+        ("ITC", "ITC"),
+        ("JIOFIN", "Jio Financial Services"),
+        ("JSWSTEEL", "JSW Steel"),
+        ("KOTAKBANK", "Kotak Mahindra Bank"),
+        ("LT", "Larsen & Toubro"),
+        ("LTIM", "LTIMindtree"),
+        ("M&M", "Mahindra & Mahindra"),
+        ("MARUTI", "Maruti Suzuki India"),
+        ("NESTLEIND", "Nestle India"),
+        ("NTPC", "NTPC"),
+        ("ONGC", "Oil and Natural Gas Corporation"),
+        ("POWERGRID", "Power Grid Corporation of India"),
+        ("RELIANCE", "Reliance Industries"),
+        ("SBILIFE", "SBI Life Insurance"),
+        ("SBIN", "State Bank of India"),
+        ("SHRIRAMFIN", "Shriram Finance"),
+        ("SUNPHARMA", "Sun Pharmaceutical Industries"),
+        ("TATACONSUM", "Tata Consumer Products"),
+        ("TMPV", "Tata Motors Passenger Vehicles"),
+        ("TATASTEEL", "Tata Steel"),
+        ("TCS", "Tata Consultancy Services"),
+        ("TECHM", "Tech Mahindra"),
+        ("TITAN", "Titan Company"),
+        ("TRENT", "Trent"),
+        ("ULTRACEMCO", "UltraTech Cement"),
+        ("WIPRO", "Wipro"),
+    )
+)
+_CORE_AI_SYMBOLS = (
+    "RELIANCE",
+    "HDFCBANK",
+    "TCS",
+    "INFY",
+    "ICICIBANK",
+    "SBIN",
+    "ITC",
+    "LT",
+    "BHARTIARTL",
+    "AXISBANK",
+)
+_NIFTY_50_BY_SYMBOL = {instrument["symbol"]: instrument for instrument in _NIFTY_50_INSTRUMENTS}
+AI_STOCK_UNIVERSE = tuple(
+    _NIFTY_50_BY_SYMBOL[symbol] for symbol in _CORE_AI_SYMBOLS
+) + tuple(
+    instrument
+    for instrument in _NIFTY_50_INSTRUMENTS
+    if instrument["symbol"] not in _CORE_AI_SYMBOLS
+)
+AI_STOCK_HISTORY_UNIVERSE = (WATCHLIST[0], WATCHLIST[1], *AI_STOCK_UNIVERSE)
 
 _cache: tuple[float, dict[str, Any]] | None = None
+_ai_universe_cache: tuple[float, dict[str, Any]] | None = None
 _cache_lock = threading.Lock()
 
 
@@ -168,28 +254,113 @@ def fetch_live_quotes() -> dict[str, Any]:
         if _cache is not None and now - _cache[0] < CACHE_TTL_SECONDS:
             return _cache[1]
 
-        quotes = []
-        warnings = []
-        fetched_at = datetime.now(timezone.utc)
-        for instrument in WATCHLIST:
-            try:
-                quotes.append(_fetch_quote(instrument, now=fetched_at))
-            except (requests.RequestException, ValueError) as exc:
-                warnings.append(f"{instrument['symbol']}: {exc}")
-
-        result = {
-            "status": "ok" if quotes else "error",
-            "provider": "Yahoo Finance",
-            "providerUrl": YAHOO_FINANCE_URL,
-            "refreshedAt": fetched_at.isoformat(),
-            "cacheStatus": "fresh",
-            "cacheAgeSeconds": 0,
-            "lastSuccessfulRefresh": fetched_at.isoformat() if quotes else None,
-            "quotes": quotes,
-            "warnings": warnings,
-        }
-        if not quotes:
-            result["message"] = "Yahoo Finance could not return any market quotes. Try again later."
-
+        result = _fetch_quotes_for(WATCHLIST)
         _cache = (time.monotonic(), result)
         return result
+
+
+def fetch_ai_stock_quotes() -> dict[str, Any]:
+    """Fetch the expanded AI universe less frequently to respect the public quote provider."""
+    global _ai_universe_cache
+
+    with _cache_lock:
+        now = time.monotonic()
+        if (
+            _ai_universe_cache is not None
+            and now - _ai_universe_cache[0] < AI_UNIVERSE_CACHE_TTL_SECONDS
+        ):
+            age = max(0, int(now - _ai_universe_cache[0]))
+            return {
+                **_ai_universe_cache[1],
+                "cacheStatus": "fresh",
+                "cacheAgeSeconds": age,
+            }
+
+        result = _fetch_quotes_for(
+            AI_STOCK_UNIVERSE,
+            include_unavailable=True,
+        )
+        _ai_universe_cache = (time.monotonic(), result)
+        return result
+
+
+def _unavailable_quote(instrument: dict[str, str], warning: str) -> dict[str, Any]:
+    return {
+        "symbol": instrument["symbol"],
+        "name": instrument["name"],
+        "exchange": instrument["exchange"],
+        "type": instrument["type"],
+        "lastPrice": None,
+        "change": None,
+        "changePct": None,
+        "open": None,
+        "high": None,
+        "low": None,
+        "previousClose": None,
+        "volume": None,
+        "timestamp": None,
+        "providerTimestamp": None,
+        "timestampStatus": "unavailable",
+        "timestampWarning": warning,
+    }
+
+
+def _fetch_quotes_for(
+    instruments: tuple[dict[str, str], ...],
+    *,
+    include_unavailable: bool = False,
+) -> dict[str, Any]:
+    quotes_by_symbol = {}
+    warnings = []
+    fetched_at = datetime.now(timezone.utc)
+
+    def fetch(instrument: dict[str, str]) -> tuple[str, dict[str, Any] | None, str | None]:
+        try:
+            return instrument["symbol"], _fetch_quote(instrument, now=fetched_at), None
+        except (requests.RequestException, ValueError) as exc:
+            return instrument["symbol"], None, f"{instrument['symbol']}: {exc}"
+
+    if include_unavailable:
+        with ThreadPoolExecutor(max_workers=AI_QUOTE_FETCH_WORKERS) as executor:
+            futures = {
+                executor.submit(fetch, instrument): instrument
+                for instrument in instruments
+            }
+            for future in as_completed(futures):
+                instrument = futures[future]
+                symbol, quote, warning = future.result()
+                if warning:
+                    warnings.append(warning)
+                if quote is not None:
+                    quotes_by_symbol[symbol] = quote
+                elif include_unavailable:
+                    quotes_by_symbol[symbol] = _unavailable_quote(instrument, warning or "Quote unavailable.")
+    else:
+        for instrument in instruments:
+            symbol, quote, warning = fetch(instrument)
+            if warning:
+                warnings.append(warning)
+            if quote is not None:
+                quotes_by_symbol[symbol] = quote
+
+    quotes = [
+        quotes_by_symbol[instrument["symbol"]]
+        for instrument in instruments
+        if instrument["symbol"] in quotes_by_symbol
+    ]
+    successful_count = sum(1 for quote in quotes if quote["lastPrice"] is not None)
+
+    result = {
+        "status": "ok" if successful_count else "error",
+        "provider": "Yahoo Finance",
+        "providerUrl": YAHOO_FINANCE_URL,
+        "refreshedAt": fetched_at.isoformat(),
+        "cacheStatus": "fresh",
+        "cacheAgeSeconds": 0,
+        "lastSuccessfulRefresh": fetched_at.isoformat() if successful_count else None,
+        "quotes": quotes,
+        "warnings": warnings,
+    }
+    if not quotes:
+        result["message"] = "Yahoo Finance could not return any market quotes. Try again later."
+    return result

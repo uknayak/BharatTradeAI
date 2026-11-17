@@ -429,10 +429,15 @@
           @if (aiPredictionError()) { <div class="notice notice-error" role="alert">{{ aiPredictionError() }}</div> }
 
           <section class="ai-picks-toolbar panel" aria-label="AI Stock Picks filters">
-            <div class="ai-picks-toolbar-heading"><div><p class="eyebrow">LIVE WATCHLIST · {{ stockQuotes()?.provider ?? 'Yahoo Finance' }}</p><h2>Live stock analysis</h2><p class="ai-model-status">{{ aiPredictionList()?.notice ?? 'Waiting for live quotes and saved-model validation status.' }}</p></div><span class="ai-pick-count">{{ filteredAiStockPicks.length }} / {{ aiStockPicks.length }} live equities</span></div>
+            <div class="ai-picks-toolbar-heading"><div><p class="eyebrow">NIFTY 50 UNIVERSE · {{ stockQuotes()?.provider ?? 'Yahoo Finance' }}</p><h2>Live stock analysis</h2><p class="ai-model-status">{{ aiPredictionList()?.notice ?? 'Waiting for live quotes and saved-model validation status.' }} Each of the 50 stocks is listed; probabilities appear only after its own model passes validation.</p></div><span class="ai-pick-count">{{ filteredAiStockPicks.length }} / {{ aiStockPicks.length }} stocks</span></div>
+            <div class="market-freshness-line">
+              <span>Yahoo Finance prices available · {{ aiQuotesWithPriceCount }} / {{ aiStockPicks.length }}</span>
+              @if (stockQuotes()?.warnings?.length) { <span>{{ stockQuotes()!.warnings.length }} symbol quotes unavailable; those stocks remain listed without a price.</span> }
+            </div>
             <div class="ai-news-actions">
-              <button type="button" class="primary-button" [disabled]="aiModelTraining() || aiPredictionLoading() || stockLoading()" (click)="trainAiStockModels()"><span [class.spinning]="aiModelTraining()">↻</span> {{ aiModelTraining() ? 'Training watchlist models' : 'Train missing watchlist models' }}</button>
-              @if (aiModelTraining()) { <span class="ai-model-status" role="status">Training and validating stocks one by one. This may take a few minutes.</span> }
+              <button type="button" class="primary-button" [disabled]="aiModelTraining() || aiPredictionLoading() || stockLoading()" (click)="trainAiStockModels()"><span [class.spinning]="aiModelTraining()">↻</span> {{ aiModelTraining() ? 'Training NIFTY 50 models' : 'Train missing NIFTY 50 models' }}</button>
+              @if (aiModelTraining()) { <span class="ai-model-status" role="status">Training and validating stocks one by one. This may take a while; no probabilities are shown until each model passes.</span> }
+              @else { <span class="ai-model-status">New stocks need sufficient stored daily history first. Use “Sync daily history”, then train; stocks with insufficient or stale data stay unvalidated.</span> }
             </div>
             <div class="ai-pick-filters">
               <label>Exchange

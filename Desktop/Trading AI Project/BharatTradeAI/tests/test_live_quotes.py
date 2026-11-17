@@ -115,6 +115,68 @@ def test_public_live_quotes_return_partial_data_and_warnings(monkeypatch):
     assert response["warnings"][0].startswith("NIFTY 50:")
 
 
+def test_ai_live_quotes_cover_the_50_stock_universe_and_cache_provider_requests(monkeypatch):
+    from app.services.market import live_quotes
+
+    live_quotes._ai_universe_cache = None
+    requested_symbols = []
+
+    def fake_quote(instrument, *, now):
+        requested_symbols.append(instrument["symbol"])
+        return {
+            "symbol": instrument["symbol"],
+            "name": instrument["name"],
+            "exchange": instrument["exchange"],
+            "type": instrument["type"],
+            "lastPrice": 100.0,
+            "changePct": 1.0,
+            "timestamp": now.isoformat(),
+        }
+
+    monkeypatch.setattr(live_quotes, "_fetch_quote", fake_quote)
+
+    first = live_quotes.fetch_ai_stock_quotes()
+    second = live_quotes.fetch_ai_stock_quotes()
+
+    assert len(live_quotes.AI_STOCK_UNIVERSE) == 50
+    assert len({item["symbol"] for item in live_quotes.AI_STOCK_UNIVERSE}) == 50
+    assert len(first["quotes"]) == 50
+    assert len(requested_symbols) == 50
+    assert second["cacheStatus"] == "fresh"
+    assert second["cacheAgeSeconds"] >= 0
+    assert len(requested_symbols) == 50
+
+
+def test_ai_live_quotes_keep_symbols_visible_when_yahoo_quote_fails(monkeypatch):
+    from app.services.market import live_quotes
+
+    live_quotes._ai_universe_cache = None
+
+    def fake_quote(instrument, *, now):
+        if instrument["symbol"] == "ADANIENT":
+            raise requests.Timeout("provider timeout")
+        return {
+            "symbol": instrument["symbol"],
+            "name": instrument["name"],
+            "exchange": instrument["exchange"],
+            "type": instrument["type"],
+            "lastPrice": 100.0,
+            "changePct": 1.0,
+            "timestamp": now.isoformat(),
+        }
+
+    monkeypatch.setattr(live_quotes, "_fetch_quote", fake_quote)
+
+    response = live_quotes.fetch_ai_stock_quotes()
+    unavailable = next(row for row in response["quotes"] if row["symbol"] == "ADANIENT")
+
+    assert len(response["quotes"]) == 50
+    assert unavailable["name"] == "Adani Enterprises"
+    assert unavailable["lastPrice"] is None
+    assert unavailable["timestampStatus"] == "unavailable"
+    assert response["warnings"] == ["ADANIENT: provider timeout"]
+
+
 def test_future_provider_quote_timestamp_is_not_exposed_as_market_time(monkeypatch):
     from datetime import datetime, timedelta, timezone
     from app.services.market import live_quotes

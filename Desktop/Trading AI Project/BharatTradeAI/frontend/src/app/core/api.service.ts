@@ -332,6 +332,7 @@ export interface AiStockNewsFeatureImpactResponse {
 
 export interface AiStockDirectionResponse {
   symbol: string;
+  company_name?: string;
   exchange: string;
   sector?: string | null;
   status: string;
@@ -606,6 +607,10 @@ export class ApiService {
 
   getLiveStockQuotes(): Promise<LiveStockQuotesResponse> {
     return firstValueFrom(this.http.get<LiveStockQuotesResponse>('/api/v1/stocks/live'));
+  }
+
+  getAiStockQuotes(): Promise<LiveStockQuotesResponse> {
+    return firstValueFrom(this.http.get<LiveStockQuotesResponse>('/api/v1/ai-stock-picks/quotes'));
   }
 
   getStockHistory(symbol: string): Promise<StockHistoryResponse> {

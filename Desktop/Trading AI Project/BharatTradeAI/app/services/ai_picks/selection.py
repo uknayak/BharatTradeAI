@@ -14,7 +14,10 @@ from app.services.ai_picks.ollama_explainer import (
 )
 from app.services.ai_picks.prediction import get_stock_direction_predictions
 from app.services.ai_picks.sentiment_analysis import get_ai_pick_sentiment
-from app.services.market.live_quotes import WATCHLIST, fetch_live_quotes
+from app.services.market.live_quotes import (
+    AI_STOCK_UNIVERSE as WATCHLIST,
+    fetch_ai_stock_quotes as fetch_live_quotes,
+)
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
 SUPPORTED_THRESHOLD_PERCENTS = (65, 70, 80)

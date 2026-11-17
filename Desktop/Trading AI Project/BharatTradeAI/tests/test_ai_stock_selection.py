@@ -376,6 +376,22 @@ def test_opportunities_api_exposes_selection(monkeypatch):
     assert response.json()["threshold"] == 0.8
 
 
+def test_ai_stock_quotes_api_uses_expanded_universe(monkeypatch):
+    from app.api.routes import ai_stock_picks
+
+    expected = {
+        "status": "ok",
+        "provider": "Yahoo Finance",
+        "quotes": [{"symbol": "ADANIENT"}, {"symbol": "RELIANCE"}],
+    }
+    monkeypatch.setattr(ai_stock_picks, "fetch_ai_stock_quotes", lambda: expected)
+
+    response = TestClient(app).get("/api/v1/ai-stock-picks/quotes")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_opportunities_api_accepts_only_supported_thresholds(monkeypatch):
     from app.api.routes import ai_stock_picks
 

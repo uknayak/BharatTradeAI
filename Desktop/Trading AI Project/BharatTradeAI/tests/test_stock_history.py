@@ -26,7 +26,9 @@ def _isolated_sessions(monkeypatch):
 
 def _bar(day: int, close: float) -> dict:
     return {
-        "candle_time": datetime(2026, 11, day, 10, tzinfo=timezone.utc),
+        "candle_time": datetime.now(timezone.utc).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        ) + timedelta(days=day - 3),
         "open": close - 1,
         "high": close + 2,
         "low": close - 2,

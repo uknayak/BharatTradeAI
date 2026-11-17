@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import SessionLocal
 from app.services.ai_picks.news_models import AIStockNewsSnapshot
-from app.services.market.live_quotes import WATCHLIST
+from app.services.market.live_quotes import AI_STOCK_UNIVERSE as WATCHLIST
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
